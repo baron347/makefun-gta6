@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>NEON HARBOR — Open World Crime</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1426; font-family: 'Segoe UI', Arial, sans-serif; color: #fff; }
+  #game, #game canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .hidden { display: none !important; }
+
+  /* ---- HUD ---- */
+  #hud { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+  #top-left { position: absolute; top: 14px; left: 16px; }
+  #cash { font-size: 30px; font-weight: 800; color: #4be37a; text-shadow: 0 2px 6px rgba(0,0,0,.7); letter-spacing: 1px; }
+  #health-wrap { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+  #health-track { width: 180px; height: 12px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.35); border-radius: 6px; overflow: hidden; }
+  #health-bar { height: 100%; width: 100%; background: #37d67a; }
+  #health-num { font-weight: 700; text-shadow: 0 1px 4px rgba(0,0,0,.8); }
+  #stars { position: absolute; top: 14px; right: 18px; font-size: 30px; letter-spacing: 4px; text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+  #stars .star { color: rgba(255,255,255,.25); }
+  #stars .star.lit { color: #ffc861; }
+  #mission { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); text-align: center; width: 520px; max-width: 60vw; }
+  #mission-title { font-size: 20px; font-weight: 800; color: #ffc861; text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+  #mission-obj { font-size: 14px; color: #fff; text-shadow: 0 1px 4px rgba(0,0,0,.9); margin-top: 2px; }
+  #mission-timer { font-size: 22px; font-weight: 800; color: #fff; text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+  #mission-timer.urgent { color: #ff3b30; }
+  #toast { position: absolute; top: 108px; left: 50%; transform: translateX(-50%); font-size: 15px; font-weight: 600; background: rgba(0,0,0,.6); padding: 6px 14px; border-radius: 20px; white-space: nowrap; }
+  #edge-arrow { position: absolute; top: 150px; left: 50%; transform: translateX(-50%); font-size: 22px; font-weight: 800; color: #ffc861; text-shadow: 0 2px 6px rgba(0,0,0,.9); }
+  #minimap { position: absolute; left: 16px; bottom: 16px; width: 220px; height: 220px; border-radius: 50%; background: rgba(0,0,0,.4); }
+  #speed { position: absolute; right: 20px; bottom: 20px; font-size: 30px; font-weight: 800; text-shadow: 0 2px 6px rgba(0,0,0,.8); }
+  #hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); font-size: 12.5px; color: rgba(255,255,255,.75); text-shadow: 0 1px 3px rgba(0,0,0,.9); white-space: nowrap; }
+  #crosshair { position: absolute; top: 50%; left: 50%; width: 22px; height: 22px; transform: translate(-50%,-50%); }
+  #crosshair::before, #crosshair::after { content: ''; position: absolute; background: rgba(255,255,255,.9); box-shadow: 0 0 3px #000; }
+  #crosshair::before { left: 10px; top: 0; width: 2px; height: 22px; }
+  #crosshair::after { top: 10px; left: 0; width: 22px; height: 2px; }
+  #vignette { position: absolute; inset: 0; pointer-events: none; opacity: 0; background: radial-gradient(ellipse at center, transparent 55%, rgba(255,0,0,.55) 100%); }
+
+  /* ---- Screens ---- */
+  .screen { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: linear-gradient(180deg, rgba(26,16,48,.82), rgba(10,6,20,.88)); }
+  .screen h1 { font-size: 64px; font-weight: 900; letter-spacing: 4px; color: #ff8c4a; text-shadow: 0 0 24px rgba(255,140,74,.6), 0 4px 0 rgba(0,0,0,.4); }
+  .screen h1 .neon { color: #4be3ff; }
+  .screen h2 { font-size: 44px; font-weight: 900; letter-spacing: 6px; }
+  #busted h2 { color: #4a7dd8; text-shadow: 0 0 24px rgba(74,125,216,.7); }
+  #wasted h2 { color: #ff3b30; text-shadow: 0 0 24px rgba(255,59,48,.7); }
+  .screen p { max-width: 560px; margin: 14px 20px; font-size: 16px; line-height: 1.55; color: #e8e2f0; }
+  .screen .controls { font-size: 13.5px; color: #b8b0cc; line-height: 1.8; margin-bottom: 8px; }
+  .screen button { pointer-events: auto; cursor: pointer; margin: 8px 6px 0; padding: 13px 34px; font-size: 17px; font-weight: 800; letter-spacing: 1px; color: #fff; background: #ff8c4a; border: none; border-radius: 8px; box-shadow: 0 4px 0 #b35c1e; }
+  .screen button:hover { background: #ffa25e; }
+  .screen button.secondary { background: #4a4460; box-shadow: 0 4px 0 #2c2740; }
+  .screen button.secondary:hover { background: #5a5474; }
+  #pause-stats { font-size: 16px; color: #ffc861; font-weight: 700; margin: 10px 0 4px; }
+</style>
+</head>
+<body>
+<div id="game"></div>
+
+<div id="hud">
+  <div id="top-left">
+    <div id="cash">$0</div>
+    <div id="health-wrap">
+      <div id="health-track"><div id="health-bar"></div></div>
+      <span id="health-num">100</span>
+    </div>
+  </div>
+  <div id="stars"></div>
+  <div id="mission">
+    <div id="mission-title">NEON HARBOR</div>
+    <div id="mission-obj">Press N to start the first job.</div>
+    <div id="mission-timer" class="hidden"></div>
+  </div>
+  <div id="toast" class="hidden"></div>
+  <div id="edge-arrow" class="hidden"></div>
+  <canvas id="minimap" width="220" height="220"></canvas>
+  <div id="speed" class="hidden"></div>
+  <div id="hint"></div>
+  <div id="crosshair" class="hidden"></div>
+  <div id="vignette"></div>
+</div>
+
+<div id="menu" class="screen">
+  <h1>NEON <span class="neon">HARBOR</span></h1>
+  <p>Sunset over Neon Harbor. You are Danny &ldquo;Dash&rdquo; Reyes, and you owe
+  Mama Lou. Steal cars, dodge the Harbor PD, run five jobs &mdash; and maybe
+  walk away clean.</p>
+  <p class="controls">WASD walk &middot; Shift run &middot; Space jump &middot; Click shoot<br>
+  E steal / exit car &middot; N start job &middot; P pause &middot; M mute</p>
+  <div>
+    <button id="btn-start">START</button>
+    <button id="btn-continue" class="secondary hidden">CONTINUE SAVE</button>
+  </div>
+</div>
+
+<div id="pause" class="screen hidden">
+  <h2>PAUSED</h2>
+  <div id="pause-stats"></div>
+  <div>
+    <button id="btn-resume">RESUME</button>
+    <button id="btn-save" class="secondary">SAVE</button>
+    <button id="btn-quit" class="secondary">QUIT TO MENU</button>
+  </div>
+</div>
+
+<div id="busted" class="screen hidden">
+  <h2>BUSTED</h2>
+  <p id="busted-fine"></p>
+  <p>Click anywhere to walk out of the precinct.</p>
+</div>
+
+<div id="wasted" class="screen hidden">
+  <h2>WASTED</h2>
+  <p id="wasted-loss"></p>
+  <p>Click anywhere to leave the clinic.</p>
+</div>
+
+<script src="./vendor/three.min.js"></script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
