@@ -18,10 +18,13 @@ export function createAudio() {
     musicTimer: null,
     musicStep: 0,
     nextNoteAt: 0,
+    intensity: 0, // wanted level 0–5: drives music density + siren volume.
   };
 
-  // Bassline roots: Am – F – C – G, one bar per second.
+  // Bassline roots: Am – F – C – G, one bar per second. Pattern B
+  // (Am – G – F – E) runs every fourth bar so the loop does not drone.
   const ROOTS = [110.0, 87.31, 130.81, 98.0];
+  const ROOTS_B = [110.0, 98.0, 87.31, 82.41];
   const JINGLE = [523.25, 659.25, 783.99, 1046.5];
 
   function ensure() {
@@ -119,8 +122,9 @@ export function createAudio() {
     A.musicTimer = setInterval(() => {
       if (!A.ctx || A.ctx.state !== 'running') return;
       while (A.nextNoteAt < A.ctx.currentTime + 0.25) {
-        const bar = Math.floor(A.musicStep / 4) % ROOTS.length;
-        const root = ROOTS[bar];
+        const bar = Math.floor(A.musicStep / 4);
+        const roots = bar % 4 === 3 ? ROOTS_B : ROOTS;
+        const root = roots[bar % ROOTS.length];
         const beat = A.musicStep % 4;
         const when = Math.max(0, A.nextNoteAt - A.ctx.currentTime);
         // Bass note on the beat.
@@ -129,6 +133,11 @@ export function createAudio() {
         if (beat % 2 === 1) noiseBurst(0.05, 0.05, 6000, 'highpass', when);
         // A fifth above the root on bar starts, for a little colour.
         if (beat === 0) tone(root * 1.5, 0.5, 'sine', 0.05, when);
+        // High heat: double-time bass + a hat on every beat.
+        if (A.intensity >= 3) {
+          tone(root * 2, 0.3, 'triangle', 0.06, when + 0.5);
+          if (beat % 2 === 0) noiseBurst(0.05, 0.06, 6000, 'highpass', when);
+        }
         A.musicStep++;
         A.nextNoteAt += 1;
       }
@@ -154,7 +163,7 @@ export function createAudio() {
     if (!A.ctx || !A.sirenOsc) return;
     A.sirenOn = on;
     const t = A.ctx.currentTime;
-    A.sirenGain.gain.setTargetAtTime(on ? 0.035 : 0, t, 0.1);
+    A.sirenGain.gain.setTargetAtTime(on ? 0.035 + A.intensity * 0.006 : 0, t, 0.1);
     if (on) {
       // Wail: sweep 650 <-> 950 Hz on a ~1.6 s cycle.
       const phase = (performance.now() / 1600) % 1;
@@ -168,8 +177,8 @@ export function createAudio() {
     tone(160, 0.1, 'square', 0.2, 0, 60);
   }
 
-  function thud() {
-    noiseBurst(0.15, 0.35, 300);
+  function thud(strength = 1) {
+    noiseBurst(0.15, Math.min(0.8, 0.35 * strength), 300);
   }
 
   function blip() {
@@ -195,5 +204,9 @@ export function createAudio() {
     tone(233, 0.6, 'triangle', 0.16, 0.6);
   }
 
-  return { init, setMuted, engine, siren, gunshot, thud, blip, click, jingle, failSting, bustedSting };
+  function setIntensity(n) {
+    A.intensity = Math.max(0, Math.min(5, Math.round(n || 0)));
+  }
+
+  return { init, setMuted, setIntensity, engine, siren, gunshot, thud, blip, click, jingle, failSting, bustedSting };
 }

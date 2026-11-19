@@ -8,7 +8,7 @@ import {
 } from './config.js';
 import { buildCity } from './city.js';
 import { createAudio } from './audio.js';
-import { createTraffic, createPolice, drivePlayerCar } from './vehicles.js';
+import { createTraffic, createPolice, createSmoke, drivePlayerCar } from './vehicles.js';
 import { createPeds } from './peds.js';
 import { createPlayer } from './player.js';
 import { createMissions } from './missions.js';
@@ -56,6 +56,7 @@ G.player = createPlayer(scene);
 G.traffic = createTraffic(G.city, scene, urlSeed);
 G.police = createPolice(G.city, scene, urlSeed);
 G.peds = createPeds(scene, G.city, urlSeed);
+G.smoke = createSmoke(scene);
 G.hud = createHUD(G);
 G.missions = createMissions(scene, G);
 
@@ -63,6 +64,7 @@ G.missions = createMissions(scene, G);
 const muzzle = new THREE.PointLight(0xffc861, 0, 14);
 scene.add(muzzle);
 let tracer = null;
+let policeTracer = null;
 let flashTexture = null;
 
 function setWanted(n) {
@@ -137,7 +139,7 @@ function stealNearestCar() {
   G.playerCar = best;
   G.player.mesh.visible = false;
   addWanted(1);
-  G.hud.toast('Car stolen — the cops noticed (+1★).');
+  G.hud.toast('Car stolen — the cops noticed.');
   G.audio.blip();
   return true;
 }
@@ -265,7 +267,7 @@ function shoot() {
   const shotDir = end.clone().sub(gunPos);
   const shotLen = shotDir.length();
   const bolt = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.05, 0.05, shotLen, 6),
+    new THREE.CylinderGeometry(0.11, 0.11, shotLen, 6),
     new THREE.MeshBasicMaterial({ color: 0xffe9a0 }),
   );
   bolt.position.copy(gunPos).add(end).multiplyScalar(0.5);
@@ -288,11 +290,11 @@ function shoot() {
     map: flashTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   }));
   flash.position.copy(gunPos);
-  flash.scale.set(2.4, 2.4, 1);
+  flash.scale.set(1.4, 1.4, 1);
   scene.add(flash);
   tracer = { line, bolt, flash, life: 0.08 };
   muzzle.position.copy(gunPos);
-  muzzle.intensity = 6;
+  muzzle.intensity = 4;
   G.audio.gunshot();
   if (bestKind === 'ped') {
     G.peds.knockDown(best);
@@ -300,6 +302,49 @@ function shoot() {
     addWanted(1);
     G.hud.toast('You shot a pedestrian (+1★).');
   }
+}
+
+// A cop fires at the player: a thick red tracer from the cruiser to a
+// point near the player, plus a small muzzle flash. Staging + live play
+// both use it; it never damages the player on its own.
+function policeShot(from, to) {
+  if (policeTracer) {
+    scene.remove(policeTracer.bolt);
+    scene.remove(policeTracer.flash);
+    policeTracer = null;
+  }
+  const fromV = new THREE.Vector3(from.x, 1.3, from.z);
+  const toV = new THREE.Vector3(to.x, 1.3, to.z);
+  const dir = toV.clone().sub(fromV);
+  const len = dir.length();
+  const bolt = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.09, len, 6),
+    new THREE.MeshBasicMaterial({ color: 0xff5a3c }),
+  );
+  bolt.position.copy(fromV).add(toV).multiplyScalar(0.5);
+  bolt.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  scene.add(bolt);
+  if (!flashTexture) {
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.height = 64;
+    const g2 = c.getContext('2d');
+    const grad = g2.createRadialGradient(32, 32, 2, 32, 32, 32);
+    grad.addColorStop(0, 'rgba(255,240,180,1)');
+    grad.addColorStop(0.4, 'rgba(255,180,80,0.7)');
+    grad.addColorStop(1, 'rgba(255,120,40,0)');
+    g2.fillStyle = grad;
+    g2.fillRect(0, 0, 64, 64);
+    flashTexture = new THREE.CanvasTexture(c);
+  }
+  const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: flashTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  flash.position.copy(fromV);
+  flash.scale.set(1.2, 1.2, 1);
+  scene.add(flash);
+  policeTracer = { bolt, flash, life: 0.12 };
+  G.audio.gunshot();
 }
 
 function startGame(fromSave) {
@@ -329,6 +374,7 @@ G.loadGame = loadGame;
 G.stealNearestCar = stealNearestCar;
 G.exitCar = exitCar;
 G.shoot = shoot;
+G.policeShot = policeShot;
 G.damagePlayer = damagePlayer;
 G.onBusted = onBusted;
 G.onWasted = onWasted;
@@ -447,7 +493,10 @@ function update(dt) {
       handbrake: !!(keys.Space),
     };
     const { hit } = drivePlayerCar(G.playerCar, input, dt, G.city);
-    if (hit) G.audio.thud();
+    if (hit) {
+      G.audio.thud(1.8);
+      G.smoke.puff(G.playerCar.x, G.playerCar.z);
+    }
     G.audio.engine(Math.abs(G.playerCar.speed) / CAR.maxSpeed, true);
     // Running over pedestrians is a crime.
     for (const p of G.peds.list) {
@@ -510,6 +559,8 @@ function update(dt) {
   }
 
   G.audio.siren(G.wanted > 0, dt);
+  G.audio.setIntensity(G.wanted);
+  G.smoke.update(dt);
 
   if (tracer) {
     tracer.life -= dt;
@@ -519,6 +570,14 @@ function update(dt) {
       scene.remove(tracer.bolt);
       scene.remove(tracer.flash);
       tracer = null;
+    }
+  }
+  if (policeTracer) {
+    policeTracer.life -= dt;
+    if (policeTracer.life <= 0) {
+      scene.remove(policeTracer.bolt);
+      scene.remove(policeTracer.flash);
+      policeTracer = null;
     }
   }
   if (muzzle.intensity > 0) muzzle.intensity = Math.max(0, muzzle.intensity - dt * 60);

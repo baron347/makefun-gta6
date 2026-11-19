@@ -3,7 +3,7 @@
 // circular minimap (redrawn every 150 ms), the edge arrow that points
 // at the mission marker, and the menu / pause / busted / wasted screens.
 
-import { CITY, clamp } from './config.js';
+import { clamp } from './config.js';
 
 export function createHUD(G) {
   const $ = (id) => document.getElementById(id);
@@ -76,10 +76,17 @@ export function createHUD(G) {
     el.edgeArrow.classList.remove('hidden');
   }
 
+  // Local-zoom minimap: a 300 m window around the player, not the whole
+  // 600 m city — so the streets, the player arrow and nearby dots are
+  // big enough to read, and the map never looks empty.
   function drawMinimap() {
     const S = 220;
-    const scale = S / (CITY.half * 2);
-    const toMap = (v) => (v + CITY.half) * scale;
+    const R = 150;
+    const scale = S / (R * 2);
+    const px = G.playerCar ? G.playerCar.x : G.player.x;
+    const pz = G.playerCar ? G.playerCar.z : G.player.z;
+    const toMapX = (v) => (v - px + R) * scale;
+    const toMapZ = (v) => (v - pz + R) * scale;
     mm.clearRect(0, 0, S, S);
     mm.save();
     mm.beginPath();
@@ -87,59 +94,77 @@ export function createHUD(G) {
     mm.clip();
     mm.fillStyle = '#241f33';
     mm.fillRect(0, 0, S, S);
-    // Blocks.
+    // Blocks in view.
     mm.fillStyle = '#4a4358';
     for (let i = 0; i < 9; i++) {
       for (let j = 0; j < 9; j++) {
-        mm.fillRect(toMap(-300 + i * 60 + 10), toMap(-300 + j * 60 + 10), 40 * scale, 40 * scale);
+        const bx = -300 + i * 60 + 10;
+        const bz = -300 + j * 60 + 10;
+        mm.fillRect(toMapX(bx), toMapZ(bz), 40 * scale, 40 * scale);
       }
     }
-    // Roads.
+    // Roads in view, thick.
     mm.strokeStyle = '#17141f';
     mm.lineWidth = 14 * scale;
     for (let i = 0; i <= 9; i++) {
-      const r = toMap(-300 + i * 60);
-      mm.beginPath();
-      mm.moveTo(r, 0);
-      mm.lineTo(r, S);
-      mm.moveTo(0, r);
-      mm.lineTo(S, r);
-      mm.stroke();
+      const r = -300 + i * 60;
+      const rx = toMapX(r);
+      if (rx >= -10 && rx <= S + 10) {
+        mm.beginPath();
+        mm.moveTo(rx, 0);
+        mm.lineTo(rx, S);
+        mm.stroke();
+      }
+      const rz = toMapZ(r);
+      if (rz >= -10 && rz <= S + 10) {
+        mm.beginPath();
+        mm.moveTo(0, rz);
+        mm.lineTo(S, rz);
+        mm.stroke();
+      }
     }
     // Mission marker.
     const marker = G.missions.markerPos();
     if (marker) {
-      const pulse = 5 + Math.sin(performance.now() / 300) * 1.5;
+      const pulse = 7 + Math.sin(performance.now() / 300) * 2;
       mm.fillStyle = '#ffc861';
       mm.beginPath();
-      mm.arc(toMap(marker.x), toMap(marker.z), pulse, 0, Math.PI * 2);
+      mm.arc(toMapX(marker.x), toMapZ(marker.z), pulse, 0, Math.PI * 2);
       mm.fill();
+      mm.strokeStyle = 'rgba(255,200,97,0.6)';
+      mm.lineWidth = 2;
+      mm.beginPath();
+      mm.arc(toMapX(marker.x), toMapZ(marker.z), pulse + 5, 0, Math.PI * 2);
+      mm.stroke();
     }
     // Traffic dots.
     mm.fillStyle = '#9a9aa8';
     for (const c of G.traffic.cars) {
-      mm.fillRect(toMap(c.x) - 1.5, toMap(c.z) - 1.5, 3, 3);
+      mm.fillRect(toMapX(c.x) - 2.5, toMapZ(c.z) - 2.5, 5, 5);
+    }
+    // Roadblocks: solid red squares.
+    mm.fillStyle = '#ff2a2a';
+    for (const c of (G.police.roadblocks || [])) {
+      mm.fillRect(toMapX(c.x) - 3.5, toMapZ(c.z) - 3.5, 7, 7);
     }
     // Police: flashing red/blue.
     flashT += 0.15;
     mm.fillStyle = Math.floor(flashT) % 2 === 0 ? '#ff2a2a' : '#2a6aff';
     for (const c of G.police.cruisers) {
       mm.beginPath();
-      mm.arc(toMap(c.x), toMap(c.z), 3.5, 0, Math.PI * 2);
+      mm.arc(toMapX(c.x), toMapZ(c.z), 5, 0, Math.PI * 2);
       mm.fill();
     }
-    // Player arrow, rotated to heading.
-    const px = G.playerCar ? G.playerCar.x : G.player.x;
-    const pz = G.playerCar ? G.playerCar.z : G.player.z;
+    // Player arrow, centred, rotated to heading.
     const heading = G.playerCar ? G.playerCar.heading : G.player.heading;
     mm.save();
-    mm.translate(toMap(px), toMap(pz));
+    mm.translate(S / 2, S / 2);
     mm.rotate(Math.atan2(Math.sin(heading), -Math.cos(heading)) + Math.PI);
     mm.fillStyle = '#ffffff';
     mm.beginPath();
-    mm.moveTo(0, -7);
-    mm.lineTo(5, 6);
-    mm.lineTo(-5, 6);
+    mm.moveTo(0, -10);
+    mm.lineTo(7, 8);
+    mm.lineTo(-7, 8);
     mm.closePath();
     mm.fill();
     mm.restore();
@@ -212,7 +237,7 @@ export function createHUD(G) {
   function showPauseStats() {
     el.pauseStats.textContent =
       `Cash $${Math.floor(G.money)}  ·  Jobs done ${G.missions.completed.length}  ·  ` +
-      `Next: ${G.missions.index < 5 ? `Job ${G.missions.index + 1}` : 'Courier runs'}  ·  Wanted ${G.wanted}★`;
+      `Next: ${G.missions.index < 6 ? `Job ${G.missions.index + 1}` : 'Courier runs'}  ·  Wanted ${G.wanted}★`;
   }
 
   function setContinueVisible(visible) {

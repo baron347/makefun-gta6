@@ -1,4 +1,4 @@
-// NEON HARBOR — five story jobs for Mama Lou plus repeatable courier
+// NEON HARBOR — six story jobs for Mama Lou plus repeatable courier
 // runs. The marker is a gold beam + spinning diamond + ground ring;
 // reaching it (or losing the heat, or grabbing the loot) pays out and
 // autosaves. Timers fail the job; N starts the next one.
@@ -41,12 +41,19 @@ export function createMissions(scene, G) {
   };
 
   function targetOf(def, stage) {
-    if (def.type === 'drops') return snapToRoad(...def.targets[stage]);
+    if (def.type === 'drops' || def.type === 'courier') return snapToRoad(...def.targets[stage]);
     if (def.type === 'score') {
       return stage === 0 ? snapToRoad(...def.bank) : snapToRoad(...def.hideout);
     }
-    if (def.type === 'courier') return snapToRoad(def.tx, def.tz);
+    if (def.type === 'tail') return { x: 0, z: 0 };
     return snapToRoad(...def.target);
+  }
+
+  function restoreTail(job) {
+    const t = job && job.targetCar;
+    if (!t) return;
+    t.isTail = false;
+    if (t.origColor !== undefined) t.mesh.userData.bodyMat.color.setHex(t.origColor);
   }
 
   function startJob(def) {
@@ -55,9 +62,23 @@ export function createMissions(scene, G) {
       stage: 0,
       timer: def.time ?? null,
       holdT: 0,
+      tailT: 0,
+      loseT: 0,
       target: targetOf(def, 0),
+      targetCar: null,
     };
     if (def.startWanted) G.setWanted(def.startWanted);
+    if (def.type === 'tail') {
+      // Pick a moving traffic car, repaint it gold: that is the target.
+      const c = G.traffic.cars.find((t) => Math.abs(t.speed) > 2) || G.traffic.cars[0];
+      if (c) {
+        c.origColor = c.mesh.userData.bodyMat.color.getHex();
+        c.mesh.userData.bodyMat.color.setHex(0xe0a83c);
+        c.isTail = true;
+        job.targetCar = c;
+        job.target = { x: c.x, z: c.z };
+      }
+    }
     M.active = job;
     markerGroup.visible = true;
     moveMarker(job.target);
@@ -76,8 +97,14 @@ export function createMissions(scene, G) {
 
   function startCourier() {
     if (M.active) return false;
-    const p = randomRoadPoint(rng);
-    const def = { ...COURIER, tx: p.x, tz: p.z };
+    // Multi-stop courier: 2–3 drops across town, one clock.
+    const stops = 2 + Math.floor(rng() * 2);
+    const targets = [];
+    for (let i = 0; i < stops; i++) {
+      const p = randomRoadPoint(rng);
+      targets.push([p.x, p.z]);
+    }
+    const def = { ...COURIER, targets, time: 150 };
     startJob(def);
     return true;
   }
@@ -97,6 +124,7 @@ export function createMissions(scene, G) {
   function complete() {
     const job = M.active;
     if (!job) return;
+    restoreTail(job);
     G.money += job.def.reward;
     M.completed.push(job.def.id);
     if (job.def.type !== 'courier') M.index++;
@@ -110,6 +138,7 @@ export function createMissions(scene, G) {
   function fail(reason) {
     const job = M.active;
     if (!job) return;
+    restoreTail(job);
     M.active = null;
     markerGroup.visible = false;
     G.hud.toast(`${job.def.title} failed — ${reason} Press N to retry.`);
@@ -136,6 +165,30 @@ export function createMissions(scene, G) {
       if (G.wanted === 0) complete();
       return;
     }
+    if (def.type === 'tail') {
+      // Follow the gold car: stay within 30 m for 20 s total; lose
+      // sight of it (over 45 m) for 8 s and the job fails.
+      const t = job.targetCar;
+      if (!t) {
+        fail('The target is gone.');
+        return;
+      }
+      job.target = { x: t.x, z: t.z };
+      moveMarker(job.target);
+      const d = dist2(p.x, p.z, t.x, t.z);
+      if (d < 30) {
+        job.tailT += dt;
+        job.loseT = 0;
+      } else {
+        job.loseT += dt;
+        if (job.loseT > 8) {
+          fail('You lost the target.');
+          return;
+        }
+      }
+      if (job.tailT >= 20) complete();
+      return;
+    }
     if (def.type === 'score' && job.stage === 0) {
       // Stage 1: hold E within 5 m of the bank to grab the loot.
       const d = dist2(p.x, p.z, job.target.x, job.target.z);
@@ -158,11 +211,11 @@ export function createMissions(scene, G) {
     // Reach-the-marker jobs (pickup, delivery, drops, score stage 2, courier).
     const d = dist2(p.x, p.z, job.target.x, job.target.z);
     if (d < 8) {
-      if (def.type === 'drops' && job.stage < def.targets.length - 1) {
+      if ((def.type === 'drops' || def.type === 'courier') && job.stage < def.targets.length - 1) {
         job.stage++;
         job.target = targetOf(def, job.stage);
         moveMarker(job.target);
-        G.hud.toast(`Drop ${job.stage} of ${def.targets.length} done — next marker.`);
+        G.hud.toast(`Stop ${job.stage} of ${def.targets.length} done — next marker.`);
         G.audio.blip();
         return;
       }
@@ -183,6 +236,8 @@ export function createMissions(scene, G) {
     const def = job.def;
     let text = def.intro;
     if (def.type === 'drops') text = `Drop ${job.stage + 1} of ${def.targets.length} — reach the gold marker.`;
+    if (def.type === 'courier') text = `Stop ${job.stage + 1} of ${def.targets.length} — reach the gold marker.`;
+    if (def.type === 'tail') text = `Tail the gold car — stay within 30 m (${Math.floor(job.tailT)}/20 s).`;
     if (def.type === 'heat') text = 'Lose every star to finish the job.';
     if (def.type === 'score' && job.stage === 0) {
       text = 'Hold E at the bank (gold marker) to grab the loot.';

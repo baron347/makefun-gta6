@@ -5,7 +5,7 @@
 // target; that drives through buildings).
 
 import {
-  CITY, ROADS, CAR, TRAFFIC_COUNT, PARKED_COUNT,
+  CITY, ROADS, CAR, TRAFFIC_COUNT, PARKED_COUNT, nearestRoad,
   mulberry32, clamp, lerp, angleDiff, dist2, randomRoadPoint,
 } from './config.js';
 import { makePersonMesh } from './peds.js';
@@ -30,26 +30,49 @@ function wheelSet() {
   return wheels;
 }
 
-export function makeCarMesh(color, police = false) {
+export function makeCarMesh(color, police = false, variant = 'sedan') {
   const g = new THREE.Group();
   const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.5 });
   const glassMat = new THREE.MeshStandardMaterial({ color: 0x101418, roughness: 0.15, metalness: 0.7 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(2, 0.65, 4.4), bodyMat);
-  body.position.y = 0.55;
+  // Variant dimensions: van is tall/long, sport is low/wide with a spoiler,
+  // taxi is a sedan with a roof sign. Sedan is the default box.
+  const dims = variant === 'van'
+    ? { w: 2.1, bodyH: 1.15, bodyY: 0.82, len: 5.4, cabinW: 1.9, cabinH: 0.7, cabinY: 1.7, cabinZ: -0.1, cabinL: 2.6 }
+    : variant === 'sport'
+      ? { w: 2.15, bodyH: 0.5, bodyY: 0.45, len: 4.4, cabinW: 1.6, cabinH: 0.42, cabinY: 0.9, cabinZ: -0.3, cabinL: 1.7 }
+      : { w: 2, bodyH: 0.65, bodyY: 0.55, len: 4.4, cabinW: 1.7, cabinH: 0.55, cabinY: 1.12, cabinZ: -0.25, cabinL: 2.1 };
+  const body = new THREE.Mesh(new THREE.BoxGeometry(dims.w, dims.bodyH, dims.len), bodyMat);
+  body.position.y = dims.bodyY;
   body.castShadow = true;
-  const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.55, 2.1), glassMat);
-  cabin.position.set(0, 1.12, -0.25);
+  const cabin = new THREE.Mesh(new THREE.BoxGeometry(dims.cabinW, dims.cabinH, dims.cabinL), glassMat);
+  cabin.position.set(0, dims.cabinY, dims.cabinZ);
   cabin.castShadow = true;
   g.add(body);
   g.add(cabin);
+  if (variant === 'sport') {
+    const spoiler = new THREE.Mesh(
+      new THREE.BoxGeometry(1.9, 0.08, 0.4),
+      new THREE.MeshStandardMaterial({ color: 0x14141a, roughness: 0.4, metalness: 0.6 }),
+    );
+    spoiler.position.set(0, dims.bodyY + 0.55, -dims.len / 2 + 0.15);
+    g.add(spoiler);
+  }
+  if (variant === 'taxi') {
+    const sign = new THREE.Mesh(
+      new THREE.BoxGeometry(0.7, 0.22, 0.3),
+      new THREE.MeshStandardMaterial({ color: 0xfff2c0, emissive: 0xffe9a0, emissiveIntensity: 1.4 }),
+    );
+    sign.position.set(0, dims.cabinY + 0.4, dims.cabinZ);
+    g.add(sign);
+  }
   const headMat = new THREE.MeshStandardMaterial({ color: 0xfff2c0, emissive: 0xffe9a0, emissiveIntensity: 1.2 });
   const tailMat = new THREE.MeshStandardMaterial({ color: 0xaa1010, emissive: 0xd81a1a, emissiveIntensity: 1.0 });
   for (const x of [-0.65, 0.65]) {
     const h = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.14, 0.06), headMat);
-    h.position.set(x, 0.62, 2.21);
+    h.position.set(x, dims.bodyY + 0.07, dims.len / 2 + 0.01);
     g.add(h);
     const t = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.14, 0.06), tailMat);
-    t.position.set(x, 0.62, -2.21);
+    t.position.set(x, dims.bodyY + 0.07, -dims.len / 2 - 0.01);
     g.add(t);
   }
   let lightBar = null;
@@ -69,7 +92,7 @@ export function makeCarMesh(color, police = false) {
   }
   const wheels = wheelSet();
   for (const w of wheels) g.add(w.steer);
-  g.userData = { bodyMat, wheels, lightBar };
+  g.userData = { bodyMat, wheels, lightBar, variant };
   return g;
 }
 
@@ -134,6 +157,23 @@ export function createTraffic(city, scene, seed = 7) {
   const cars = [];
   const parked = [];
 
+  // Vehicle mix: taxi (yellow + roof sign), van/truck (tall, slow),
+  // sport (low, spoiler, fast), sedan (default). Each variant drives
+  // at its own cruise speed.
+  function pickVariant() {
+    const r = rng();
+    if (r < 0.14) return 'taxi';
+    if (r < 0.28) return 'van';
+    if (r < 0.42) return 'sport';
+    return 'sedan';
+  }
+
+  function cruiseFor(variant) {
+    if (variant === 'sport') return 12 + rng() * 5;
+    if (variant === 'van') return 7 + rng() * 2.5;
+    return 9 + rng() * 4;
+  }
+
   function spawnTraffic() {
     const p = randomRoadPoint(rng);
     // randomRoadPoint returns a point exactly on a road: if x is a road
@@ -143,15 +183,17 @@ export function createTraffic(city, scene, seed = 7) {
     const road = axis === 'z' ? p.x : p.z;
     const dir = rng() < 0.5 ? 1 : -1;
     const offset = (rng() < 0.5 ? -1 : 1) * CITY.lane;
-    const mesh = makeCarMesh(PAINTS[Math.floor(rng() * PAINTS.length)]);
+    const variant = pickVariant();
+    const color = variant === 'taxi' ? 0xf2c200 : PAINTS[Math.floor(rng() * PAINTS.length)];
+    const mesh = makeCarMesh(color, false, variant);
     scene.add(mesh);
     const car = {
-      mesh, kind: 'traffic',
+      mesh, kind: 'traffic', variant,
       x: axis === 'z' ? road + offset : p.x,
       z: axis === 'x' ? road + offset : p.z,
       heading: headingOf(axis, dir),
       speed: 0,
-      cruise: 9 + rng() * 4,
+      cruise: cruiseFor(variant),
       axis, road, dir, offset,
       turnCd: 2 + rng() * 3,
     };
@@ -166,10 +208,11 @@ export function createTraffic(city, scene, seed = 7) {
     const alongRoad = rng() < 0.5;
     const road = alongRoad ? p.x : p.z;
     const off = (rng() < 0.5 ? -1 : 1) * (CITY.roadWidth / 2 - 1.2);
-    const mesh = makeCarMesh(PAINTS[Math.floor(rng() * PAINTS.length)]);
+    const variant = rng() < 0.2 ? 'van' : 'sedan';
+    const mesh = makeCarMesh(PAINTS[Math.floor(rng() * PAINTS.length)], false, variant);
     scene.add(mesh);
     const car = {
-      mesh, kind: 'parked',
+      mesh, kind: 'parked', variant,
       x: alongRoad ? road + off : p.x,
       z: alongRoad ? p.z : road + off,
       heading: alongRoad ? (rng() < 0.5 ? 0 : Math.PI) : (rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2),
@@ -288,7 +331,140 @@ export function createPolice(city, scene, seed = 7) {
   const rng = mulberry32(seed + 31);
   const cruisers = [];
   const cops = [];
+  const roadblockCars = [];
+  let rbPairs = [];
+  let rbT = 0;
   let flashT = 0;
+  let copFireT = 0;
+  let heliObj = null;
+  let heliAngle = 0;
+
+  // ---- roadblocks: pairs of cruisers parked sideways across the road
+  // ahead of the player while wanted >= 3 (1 pair, 2 pairs at 5 stars).
+  function placeRoadblock(px, pz, heading, ahead) {
+    const fx = Math.sin(heading);
+    const fz = Math.cos(heading);
+    const n = nearestRoad(px + fx * ahead, pz + fz * ahead);
+    const cars = [];
+    const mk = (x, z, h) => {
+      const mesh = makeCarMesh(0xe9e9e9, true);
+      scene.add(mesh);
+      const c = { mesh, kind: 'roadblock', x, z, heading: h, speed: 0 };
+      syncCarMesh(c);
+      cars.push(c);
+      roadblockCars.push(c);
+      return c;
+    };
+    if (n.along === 'z') {
+      mk(n.x - 3.4, n.z, Math.PI / 2);
+      mk(n.x + 3.4, n.z, Math.PI / 2);
+    } else {
+      mk(n.x, n.z - 3.4, 0);
+      mk(n.x, n.z + 3.4, 0);
+    }
+    return { cars, cx: (cars[0].x + cars[1].x) / 2, cz: (cars[0].z + cars[1].z) / 2 };
+  }
+
+  function clearRoadblocks() {
+    for (const c of roadblockCars) scene.remove(c.mesh);
+    roadblockCars.length = 0;
+    rbPairs = [];
+  }
+
+  function updateRoadblocks(dt, G) {
+    rbT += dt;
+    const wantPairs = G.wanted >= 5 ? 2 : G.wanted >= 3 ? 1 : 0;
+    if (wantPairs === 0) {
+      if (rbPairs.length) clearRoadblocks();
+      return;
+    }
+    const px = G.playerCar ? G.playerCar.x : G.player.x;
+    const pz = G.playerCar ? G.playerCar.z : G.player.z;
+    const heading = G.playerCar ? G.playerCar.heading : G.player.heading;
+    let stale = rbPairs.length !== wantPairs || rbT > 4;
+    if (!stale) {
+      for (const p of rbPairs) {
+        if (dist2(px, pz, p.cx, p.cz) > 75) { stale = true; break; }
+      }
+    }
+    if (stale) {
+      clearRoadblocks();
+      for (let i = 0; i < wantPairs; i++) {
+        rbPairs.push(placeRoadblock(px, pz, heading, 42 + i * 55));
+      }
+      rbT = 0;
+    }
+    // Flash the roadblock light bars with the cruisers.
+    const phase = Math.floor(flashT / 0.25) % 2 === 0;
+    for (const c of roadblockCars) {
+      const lb = c.mesh.userData.lightBar;
+      if (lb) {
+        lb.redMat.emissiveIntensity = phase ? 2.4 : 0.25;
+        lb.blueMat.emissiveIntensity = phase ? 0.25 : 2.4;
+      }
+    }
+  }
+
+  // ---- police helicopter: AI only, never flyable. Appears at wanted
+  // >= 4, orbits the player with a spinning rotor and a spotlight.
+  function buildHeli() {
+    const group = new THREE.Group();
+    const white = new THREE.MeshStandardMaterial({ color: 0xe9e9e9, roughness: 0.4, metalness: 0.3 });
+    const blue = new THREE.MeshStandardMaterial({ color: 0x1a2a55, roughness: 0.4, metalness: 0.3 });
+    const body = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.4, 4.2), white);
+    body.castShadow = true;
+    const stripe = new THREE.Mesh(new THREE.BoxGeometry(2.24, 0.4, 4.24), blue);
+    stripe.position.y = -0.2;
+    const glass = new THREE.Mesh(
+      new THREE.BoxGeometry(1.8, 0.7, 1.2),
+      new THREE.MeshStandardMaterial({ color: 0x101418, roughness: 0.15, metalness: 0.7 }),
+    );
+    glass.position.set(0, 0.3, 1.6);
+    const tail = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 4.5), white);
+    tail.position.set(0, 0.3, -4);
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.15, 1.4, 1), blue);
+    fin.position.set(0, 0.9, -6);
+    const rotor = new THREE.Group();
+    const bladeGeo = new THREE.BoxGeometry(9, 0.08, 0.5);
+    const bladeMat = new THREE.MeshStandardMaterial({ color: 0x14141a, roughness: 0.6 });
+    const b1 = new THREE.Mesh(bladeGeo, bladeMat);
+    const b2 = new THREE.Mesh(bladeGeo, bladeMat);
+    b2.rotation.y = Math.PI / 2;
+    rotor.add(b1);
+    rotor.add(b2);
+    rotor.position.y = 1.1;
+    const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.8, 8), bladeMat);
+    mast.position.y = 0.7;
+    // Translucent spotlight cone under the heli (apex at the heli).
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(6, 30, 16, 1, true),
+      new THREE.MeshBasicMaterial({ color: 0xfff2c0, transparent: true, opacity: 0.12, side: THREE.DoubleSide, depthWrite: false }),
+    );
+    cone.position.y = -16;
+    const spot = new THREE.SpotLight(0xfff2c0, 60, 60, 0.35, 0.5);
+    spot.position.set(0, 0, 0);
+    scene.add(spot.target);
+    group.add(body, stripe, glass, tail, fin, mast, rotor, cone, spot);
+    group.visible = false;
+    scene.add(group);
+    return { group, rotor, spot };
+  }
+
+  function updateHeli(dt, G) {
+    if (!heliObj) heliObj = buildHeli();
+    if (G.wanted < 4) {
+      heliObj.group.visible = false;
+      return;
+    }
+    const px = G.playerCar ? G.playerCar.x : G.player.x;
+    const pz = G.playerCar ? G.playerCar.z : G.player.z;
+    heliObj.group.visible = true;
+    heliAngle += dt * 0.22;
+    heliObj.group.position.set(px + Math.cos(heliAngle) * 26, 34, pz + Math.sin(heliAngle) * 26);
+    heliObj.group.lookAt(px, 0, pz);
+    heliObj.rotor.rotation.y += dt * 22;
+    heliObj.spot.target.position.set(px, 0, pz);
+  }
 
   function spawnCruiser(px, pz) {
     for (let tries = 0; tries < 10; tries++) {
@@ -345,6 +521,26 @@ export function createPolice(city, scene, seed = 7) {
     const px = G.playerCar ? G.playerCar.x : G.player.x;
     const pz = G.playerCar ? G.playerCar.z : G.player.z;
     const playerSpeed = G.playerCar ? Math.abs(G.playerCar.speed) : Math.abs(G.player.speed);
+
+    updateRoadblocks(dt, G);
+    updateHeli(dt, G);
+    // Roadblock cruisers are solid to the player's car.
+    if (G.playerCar) {
+      for (const c of roadblockCars) {
+        const pdx = G.playerCar.x - c.x;
+        const pdz = G.playerCar.z - c.z;
+        const pd = Math.hypot(pdx, pdz);
+        if (pd > 0.01 && pd < 3.6) {
+          const push = (3.6 - pd) / 2;
+          const nx = pdx / pd;
+          const nz = pdz / pd;
+          G.playerCar.x += nx * push;
+          G.playerCar.z += nz * push;
+          G.playerCar.speed *= 0.5;
+          syncCarMesh(G.playerCar);
+        }
+      }
+    }
 
     for (const c of cruisers) {
       const dx = px - c.x;
@@ -427,14 +623,32 @@ export function createPolice(city, scene, seed = 7) {
         cop.bustT = 0;
       }
     }
+
+    // Cops on foot fire at the player on foot (visual tracer, no damage
+    // — the bust timer is still what catches you).
+    copFireT -= dt;
+    if (copFireT <= 0 && G.wanted >= 3 && !G.playerCar && G.policeShot) {
+      const near = cops.find((c) => dist2(c.x, c.z, G.player.x, G.player.z) < 28);
+      if (near) {
+        G.policeShot(
+          { x: near.x, z: near.z },
+          { x: G.player.x + (rng() - 0.5) * 3, z: G.player.z + (rng() - 0.5) * 3 },
+        );
+        copFireT = 2 + rng() * 1.5;
+      } else {
+        copFireT = 0.5;
+      }
+    }
   }
 
   function clearAll() {
     for (const c of [...cruisers]) removeCruiser(c);
     for (const c of [...cops]) removeCop(c);
+    clearRoadblocks();
+    if (heliObj) heliObj.group.visible = false;
   }
 
-  return { cruisers, cops, update, clearAll, spawnCruiser, spawnCop };
+  return { cruisers, cops, roadblocks: roadblockCars, update, clearAll, spawnCruiser, spawnCop };
 }
 
 // ---------------------------------------------------------------- autopilot
@@ -498,6 +712,55 @@ export function autopilotDrive(car, target, dt, city, st) {
     dt,
     city,
   );
+}
+
+// ---- crash smoke: a small pool of grey puffs that grow and fade.
+// Puffs are sprites, so they read from any angle at screenshot scale.
+export function createSmoke(scene) {
+  const c = document.createElement('canvas');
+  c.width = 64;
+  c.height = 64;
+  const g2 = c.getContext('2d');
+  const grad = g2.createRadialGradient(32, 32, 2, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(200,200,200,0.85)');
+  grad.addColorStop(0.6, 'rgba(160,160,160,0.45)');
+  grad.addColorStop(1, 'rgba(140,140,140,0)');
+  g2.fillStyle = grad;
+  g2.fillRect(0, 0, 64, 64);
+  const tex = new THREE.CanvasTexture(c);
+  const puffs = [];
+  for (let i = 0; i < 12; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0, depthWrite: false }));
+    s.visible = false;
+    scene.add(s);
+    puffs.push({ s, life: 0 });
+  }
+  let next = 0;
+  function puff(x, z) {
+    const p = puffs[next];
+    next = (next + 1) % puffs.length;
+    p.s.position.set(x, 1.2, z);
+    p.s.scale.set(1.5, 1.5, 1);
+    p.s.material.opacity = 0.8;
+    p.s.visible = true;
+    p.life = 1.2;
+  }
+  function update(dt) {
+    for (const p of puffs) {
+      if (p.life <= 0) continue;
+      p.life -= dt;
+      if (p.life <= 0) {
+        p.s.visible = false;
+        continue;
+      }
+      const k = 1 - p.life / 1.2;
+      const sc = 1.5 + k * 4;
+      p.s.scale.set(sc, sc, 1);
+      p.s.material.opacity = 0.8 * (1 - k);
+      p.s.position.y = 1.2 + k * 2;
+    }
+  }
+  return { puff, update };
 }
 
 export { lerp };

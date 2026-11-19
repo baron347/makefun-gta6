@@ -32,9 +32,18 @@ function makeFacadeTexture(rng, hue) {
       g.fillRect(col * ww + 3, r * wh + 4, ww - 6, wh - 8);
     }
   }
-  // Dark ground-floor band.
-  g.fillStyle = 'rgba(8,8,14,0.85)';
-  g.fillRect(0, 256 - 18, 128, 18);
+  // Ground floor: a lit storefront, not a black band — warm shop
+  // windows, a door, and a thin neon awning strip.
+  const neon = ['#ff2fb3', '#4be3ff', '#ffc861', '#4be37a'][Math.floor(rng() * 4)];
+  g.fillStyle = '#2a1e33';
+  g.fillRect(0, 256 - 24, 128, 24);
+  g.fillStyle = 'rgba(255,200,120,0.95)';
+  g.fillRect(8, 256 - 20, 44, 16);
+  g.fillRect(76, 256 - 20, 44, 16);
+  g.fillStyle = '#1a1210';
+  g.fillRect(56, 256 - 20, 16, 20);
+  g.fillStyle = neon;
+  g.fillRect(0, 256 - 26, 128, 3);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -172,7 +181,7 @@ export function buildCity(scene, seed = 7) {
 
   // ---- buildings ---------------------------------------------------------
   const buildings = [];
-  const facadeHues = ['#7a7490', '#847a6a', '#6f7a93', '#8d7a82'];
+  const facadeHues = ['#7a7490', '#847a6a', '#6f7a93', '#8d7a82', '#5f6b8a', '#93806a', '#7d6a8a', '#6a7a6a'];
   const facadeTex = facadeHues.map((h) => makeFacadeTexture(rng, h));
   const roofMat = new THREE.MeshStandardMaterial({ color: 0x2a2530, roughness: 1 });
   const wallMats = facadeTex.map(
@@ -221,8 +230,87 @@ export function buildCity(scene, seed = 7) {
         const roof = new THREE.Mesh(new THREE.BoxGeometry(w * 0.7, 1.2, w * 0.7), roofMat);
         roof.position.set(px, h + 0.6, pz);
         group.add(roof);
-        buildings.push({ minX: px - w / 2, maxX: px + w / 2, minZ: pz - w / 2, maxZ: pz + w / 2 });
+        buildings.push({ minX: px - w / 2, maxX: px + w / 2, minZ: pz - w / 2, maxZ: pz + w / 2, h, cx: px, cz: pz });
       }
+    }
+  }
+
+  // ---- neon billboards on tall downtown rooftops -----------------------
+  function makeBillboardTexture(text, color) {
+    const c = document.createElement('canvas');
+    c.width = 512;
+    c.height = 128;
+    const g = c.getContext('2d');
+    g.fillStyle = '#120a1e';
+    g.fillRect(0, 0, 512, 128);
+    g.strokeStyle = color;
+    g.lineWidth = 6;
+    g.strokeRect(4, 4, 504, 120);
+    g.font = '900 64px Arial, sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.shadowColor = color;
+    g.shadowBlur = 28;
+    g.fillStyle = color;
+    g.fillText(text, 256, 66);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+  const BILLBOARDS = [
+    ['NEON HARBOR', '#ff2fb3'],
+    ["MAMA LOU'S", '#ffc861'],
+    ['HARBOR CASINO', '#4be3ff'],
+    ['SUNSET MOTEL', '#ff8c4a'],
+    ['TACOS 24H', '#4be37a'],
+  ];
+  const downtown = buildings
+    .filter((b) => b.h > 22 && Math.hypot(b.cx, b.cz) < 170)
+    .sort((a, b) => b.h - a.h)
+    .slice(0, BILLBOARDS.length);
+  downtown.forEach((b, i) => {
+    const [text, color] = BILLBOARDS[i % BILLBOARDS.length];
+    const board = new THREE.Mesh(
+      new THREE.PlaneGeometry(22, 5.5),
+      new THREE.MeshBasicMaterial({ map: makeBillboardTexture(text, color) }),
+    );
+    // Face south (+z) from the rooftop front edge.
+    board.position.set(b.cx, b.h + 3.4, b.maxZ + 0.3);
+    group.add(board);
+    const back = board.clone();
+    back.rotation.y = Math.PI;
+    back.position.set(b.cx, b.h + 3.4, b.minZ - 0.3);
+    group.add(back);
+  });
+
+  // ---- traffic lights at central intersections (visual) ----------------
+  const tlPoleMat = new THREE.MeshStandardMaterial({ color: 0x2c2c34, roughness: 0.6, metalness: 0.4 });
+  const tlBoxMat = new THREE.MeshStandardMaterial({ color: 0x14141a, roughness: 0.5 });
+  const tlRed = new THREE.MeshStandardMaterial({ color: 0xcc1010, emissive: 0xff2222, emissiveIntensity: 1.8 });
+  const tlGreen = new THREE.MeshStandardMaterial({ color: 0x10cc40, emissive: 0x22ff66, emissiveIntensity: 1.8 });
+  const tlDim = new THREE.MeshStandardMaterial({ color: 0x30251a, emissive: 0x000000, emissiveIntensity: 0 });
+  const tlPoleGeo = new THREE.CylinderGeometry(0.12, 0.16, 6.5, 6);
+  const tlBoxGeo = new THREE.BoxGeometry(0.7, 1.8, 0.5);
+  const tlDotGeo = new THREE.SphereGeometry(0.22, 8, 6);
+  let tlI = 0;
+  for (const rx of ROADS) {
+    for (const rz of ROADS) {
+      if (Math.abs(rx) > 120 || Math.abs(rz) > 120) continue;
+      if ((tlI++ % 3) !== 0) continue;
+      const pole = new THREE.Mesh(tlPoleGeo, tlPoleMat);
+      pole.position.set(rx + 8.2, 3.25, rz + 8.2);
+      group.add(pole);
+      const box = new THREE.Mesh(tlBoxGeo, tlBoxMat);
+      box.position.set(rx + 8.2, 6.6, rz + 8.2);
+      group.add(box);
+      // One direction green, the other red — static, visual only.
+      const go = (tlI % 2) === 0;
+      const top = new THREE.Mesh(tlDotGeo, go ? tlDim : tlRed);
+      top.position.set(rx + 8.2, 7.05, rz + 8.47);
+      const bot = new THREE.Mesh(tlDotGeo, go ? tlGreen : tlDim);
+      bot.position.set(rx + 8.2, 6.15, rz + 8.47);
+      group.add(top);
+      group.add(bot);
     }
   }
 

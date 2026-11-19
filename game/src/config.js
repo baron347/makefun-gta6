@@ -49,7 +49,7 @@ export const WANTED = {
   ramRange: 3.2,
 };
 
-export const TRAFFIC_COUNT = 20;
+export const TRAFFIC_COUNT = 32;
 export const PARKED_COUNT = 14;
 export const PED_COUNT = 24;
 
@@ -115,7 +115,7 @@ export function randomRoadPoint(rng) {
 
 // ---------------------------------------------------------------- missions
 
-// Story: Danny "Dash" Reyes owes Mama Lou. Five jobs, then courier runs.
+// Story: Danny "Dash" Reyes owes Mama Lou. Six jobs, then courier runs.
 // Targets are snapped to the nearest road when a job starts, so a marker
 // never lands inside a building.
 export const MISSIONS = [
@@ -154,6 +154,13 @@ export const MISSIONS = [
     reward: 250,
   },
   {
+    id: 'tail',
+    title: 'Tail the Courier',
+    type: 'tail',
+    intro: 'Follow the gold car — stay close, do not lose it.',
+    reward: 350,
+  },
+  {
     id: 'score',
     title: 'The Big Score',
     type: 'score',
@@ -179,5 +186,5 @@ export const STORY = {
   boss: 'Mama Lou',
   blurb:
     'Sunset over Neon Harbor. You owe Mama Lou, and she collects. ' +
-    'Steal cars, dodge the Harbor PD, run five jobs — and maybe walk away clean.',
+    'Steal cars, dodge the Harbor PD, run six jobs — and maybe walk away clean.',
 };

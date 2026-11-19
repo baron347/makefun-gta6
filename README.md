@@ -7,24 +7,31 @@
 **Steal a car. Outrun the cops. Run the jobs. Own the harbor.**
 
 NEON HARBOR is an open-world crime game in the browser — a 9×9-block sunset
-city you explore on foot and by car, with 20 traffic cars and 14 parked, a
-5-star wanted system with police chases, 5 story missions plus courier jobs,
-a pistol, a full HUD with minimap, menu / pause / busted / wasted states,
-localStorage saves, and WebAudio sound. Static files, no network, no account.
+city you explore on foot and by car, with 32 traffic cars and 14 parked,
+a 5-star wanted system with police chases, roadblocks and a police
+helicopter, 6 story missions plus multi-stop courier jobs, a pistol,
+a full HUD with a local-zoom minimap, menu / pause / busted / wasted
+states, localStorage saves, and WebAudio sound. Static files, no network,
+no account.
 
-![Cover — a police chase through the harbor](screenshots/1-chase.jpg)
+![Cover — a police chase through the harbor](screenshots/1-cover.jpg)
 
 ## What you do
 
 - **Drive the city.** Take any car on the street — traffic keeps moving,
-  parked cars wait at the curb, and the harbor district is yours to cross.
+  parked cars wait at the curb, and the city is yours to cross. Traffic
+  mixes sedans, yellow taxis, vans and sports cars, each with its own
+  speed.
 - **Earn your wanted stars.** Steal cars and cause trouble and the police
-  come for you: cruisers chase, roadblocks form, and the heat climbs to
-  5 stars. Lose them, or get busted.
-- **Run the jobs.** 5 story missions plus courier work — each job pays,
-  raises the heat, and pushes the story forward.
+  come for you: cruisers chase, roadblocks form across the road at 3
+  stars and up, and a police helicopter with a spotlight orbits you at
+  4 stars and up. Lose them, or get busted.
+- **Run the jobs.** 6 story missions plus multi-stop courier work — a
+  pickup, a timed delivery, three drops, losing the heat, tailing a
+  gold car, and the big score. Each job pays, raises the heat, and
+  pushes the story forward.
 - **Stay alive.** A pistol, a health system, and a HUD that tells the
-  truth: wanted level, minimap, mission timer, and cash on hand.
+  truth: wanted level, local-zoom minimap, mission timer, and cash on hand.
 
 ## Run it
 
@@ -40,10 +47,13 @@ Then open <http://localhost:8080> in desktop Chrome.
 
 - `game/` — plain static files, ES modules, no build step. three.js r160
   is vendored under `game/vendor/three.min.js`.
-- `game/src/` — the game: city (`city.js`), vehicles (`vehicles.js`),
-  pedestrians (`peds.js`), player (`player.js`), missions (`missions.js`),
-  HUD with minimap (`hud.js`), audio (`audio.js`), and the entry point
-  (`main.js`).
+- `game/src/` — the game: city (`city.js`, neon billboards, lit
+  storefronts, traffic lights), vehicles (`vehicles.js`, traffic
+  variants, police, roadblocks, helicopter, crash smoke), pedestrians
+  (`peds.js`), player (`player.js`), missions (`missions.js`), HUD with
+  local-zoom minimap (`hud.js`), audio (`audio.js`, two bassline
+  patterns, intensity rises with the wanted level), screenshot staging
+  (`shots.js`), and the entry point (`main.js`).
 - `main.ts` — the hand-in program (Node 22 stdlib only): copies `game/` and
   `screenshots/` to the output directory and writes `dossier.json` with the
   vendored make.fun library.
