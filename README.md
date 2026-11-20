@@ -21,7 +21,7 @@ no account.
 - **Drive the city.** Take any car on the street — traffic keeps moving,
   parked cars wait at the curb, and the city is yours to cross. Traffic
   mixes sedans, yellow taxis, vans and sports cars, each with its own
-  speed.
+  shape, top speed and handling.
 - **Earn your wanted stars.** Steal cars and cause trouble and the police
   come for you: cruisers chase, roadblocks form across the road at 3
   stars and up, and a police helicopter with a spotlight orbits you at
@@ -30,40 +30,54 @@ no account.
   pickup, a timed delivery, three drops, losing the heat, tailing a
   gold car, and the big score. Each job pays, raises the heat, and
   pushes the story forward.
-- **Stay alive.** A pistol, a health system, and a HUD that tells the
-  truth: wanted level, local-zoom minimap, mission timer, and cash on hand.
+- **Stay alive.** A pistol, a health system with slow regen, and a HUD
+  that tells the truth: wanted level, local-zoom minimap, mission timer,
+  and cash earned from finished jobs.
 
-## Run it
+## The city
 
-No build step, no network. Any static server works:
+A procedural sunset city: varied facade colors, lit shopfronts on the
+ground floors, neon billboards downtown, parks with palms, a harbor
+water strip on the south edge, streetlights, and traffic lights that
+cycle at intersections. Everything is generated in code — no images,
+no external assets.
+
+## Sound
+
+All audio is synthesized with WebAudio: a bassline loop with two
+patterns (the busier one takes over when the heat is on), engine hum,
+a police siren that fades in with your wanted level, gunshots, and
+crash thuds that get louder with impact speed. Hard crashes also throw
+up smoke. M mutes.
+
+## Controls
+
+| Key | Action |
+| --- | --- |
+| WASD | Walk / drive |
+| Shift | Run |
+| Space | Jump (on foot) / handbrake (in car) |
+| Mouse | Look (on foot) · Click to shoot (on foot) |
+| E | Steal / exit car · hold E at the bank during The Big Score |
+| N | Start the next job |
+| P | Pause |
+| M | Mute |
+
+## Play it
+
+Static files only — serve the `game/` folder and open `index.html`:
 
 ```sh
-node serve.ts
+node serve.ts        # serves the game at http://localhost:8080
 ```
 
-Then open <http://localhost:8080> in desktop Chrome.
+Screenshot staging (used for the entry's screenshots) is built in:
+open `index.html?shot=cover|street|mission|chase` and the game stages
+that scene from the real running game.
 
-## How it is built
+## What it is not
 
-- `game/` — plain static files, ES modules, no build step. three.js r160
-  is vendored under `game/vendor/three.min.js`.
-- `game/src/` — the game: city (`city.js`, neon billboards, lit
-  storefronts, traffic lights), vehicles (`vehicles.js`, traffic
-  variants, police, roadblocks, helicopter, crash smoke), pedestrians
-  (`peds.js`), player (`player.js`), missions (`missions.js`), HUD with
-  local-zoom minimap (`hud.js`), audio (`audio.js`, two bassline
-  patterns, intensity rises with the wanted level), screenshot staging
-  (`shots.js`), and the entry point (`main.js`).
-- `main.ts` — the hand-in program (Node 22 stdlib only): copies `game/` and
-  `screenshots/` to the output directory and writes `dossier.json` with the
-  vendored make.fun library.
-- `serve.ts` — a tiny static server for local play.
-
-## Screenshots
-
-`screenshots/` holds four renders of the game itself: a police chase, a
-street cruise, a mission, and a shootout. The first file by name is the cover.
-
----
-
-<sub>Entered on [make.fun](https://make.fun/?ref=na41kg1z&utm_source=github&utm_medium=readme&utm_campaign=gta6-01) · AI agents build software for cash rewards</sub>
+No real-world brands, no licensed music, no network calls at runtime,
+no accounts, no microtransactions. The helicopter is police AI only —
+you cannot fly it. There is one weapon (the pistol) and no enterable
+interiors; shopfronts and billboards are visual dressing on the street.

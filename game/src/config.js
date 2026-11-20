@@ -1,12 +1,9 @@
-// NEON HARBOR — shared constants, mission script, RNG and road helpers.
-// Everything every other module needs lives here so the modules never
-// disagree about the shape of the city or the shape of a job.
+// NEON HARBOR — shared constants, city math, mission script, seeded RNG.
+// One small module every other module imports, so the city shape, the
+// mission list and the road helpers can never drift apart.
 
-export const SAVE_KEY = 'neonharbor-save-v1';
+export const SAVE_KEY = 'neonharbor-save-v2';
 
-// The city is a 9x9 block grid. Roads are the lines x = c and z = c for
-// c in ROADS; blocks sit between neighbouring roads, set back by the
-// sidewalk. The whole map runs from -HALF to +HALF on both axes.
 export const CITY = {
   blocks: 9,
   pitch: 60,
@@ -17,12 +14,12 @@ export const CITY = {
 };
 
 export const ROADS = [];
-for (let i = 0; i <= CITY.blocks; i++) ROADS.push(-CITY.half + i * CITY.pitch);
+for (let i = 0; i <= CITY.blocks; i += 1) ROADS.push(-CITY.half + i * CITY.pitch);
 
 export const PLAYER = {
-  walkSpeed: 4.2,
-  runSpeed: 7.5,
-  jumpSpeed: 6.5,
+  walkSpeed: 4.4,
+  runSpeed: 7.8,
+  jumpSpeed: 6.8,
   gravity: 18,
   health: 100,
   regen: 6,
@@ -30,11 +27,11 @@ export const PLAYER = {
 };
 
 export const CAR = {
-  accel: 16,
-  brake: 30,
-  reverse: 10,
-  maxSpeed: 34,
-  maxReverse: 10,
+  accel: 17,
+  brake: 32,
+  reverse: 11,
+  maxSpeed: 35,
+  maxReverse: 11,
   maxSteer: 0.55,
   handbrakeTurn: 1.7,
 };
@@ -43,20 +40,19 @@ export const WANTED = {
   max: 5,
   quietSeconds: 25,
   decayEvery: 8,
-  copBustRange: 1.6,
+  copBustRange: 1.7,
   copBustSeconds: 1.5,
   ramDamage: 12,
-  ramRange: 3.2,
+  ramRange: 3.4,
 };
 
 export const TRAFFIC_COUNT = 32;
 export const PARKED_COUNT = 14;
 export const PED_COUNT = 24;
 
-// Seeded RNG (mulberry32) so the city is identical for a given ?seed=.
 export function mulberry32(seed) {
   let a = seed >>> 0;
-  return function () {
+  return function next() {
     a |= 0;
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
@@ -68,16 +64,11 @@ export function mulberry32(seed) {
 export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 export const lerp = (a, b, t) => a + (b - a) * t;
 
-// Shortest signed difference between two headings, in (-PI, PI].
 export function angleDiff(a, b) {
   let d = a - b;
   while (d > Math.PI) d -= Math.PI * 2;
   while (d <= -Math.PI) d += Math.PI * 2;
   return d;
-}
-
-export function headingTo(h) {
-  return { x: Math.sin(h), z: Math.cos(h) };
 }
 
 export function dist2(ax, az, bx, bz) {
@@ -89,8 +80,7 @@ export function inBounds(x, z) {
 }
 
 // Nearest point on the road network to (x, z). Roads are axis-aligned
-// lines, so the nearest road point is the closest vertical or horizontal
-// road line clamped to the map. `along` is the coordinate along the road.
+// lines, so this is just the closest vertical or horizontal road line.
 export function nearestRoad(x, z) {
   let best = null;
   for (const c of ROADS) {
@@ -113,11 +103,11 @@ export function randomRoadPoint(rng) {
   return rng() < 0.5 ? { x: c, z: along } : { x: along, z: c };
 }
 
-// ---------------------------------------------------------------- missions
-
-// Story: Danny "Dash" Reyes owes Mama Lou. Six jobs, then courier runs.
-// Targets are snapped to the nearest road when a job starts, so a marker
-// never lands inside a building.
+// ------------------------------------------------------------------ missions
+//
+// Story: Danny "Dash" Reyes owes Mama Lou. Six story jobs, then repeatable
+// courier runs. Targets are snapped to the nearest road when a job starts,
+// so a marker never lands inside a building.
 export const MISSIONS = [
   {
     id: 'pickup',
@@ -131,7 +121,7 @@ export const MISSIONS = [
     id: 'delivery',
     title: 'Hot Delivery',
     type: 'delivery',
-    intro: 'Deliver the goods across town. The heat is on — 2 stars from the start.',
+    intro: 'Deliver the goods across town. 2 stars from the start.',
     target: [210, -210],
     reward: 300,
     time: 150,
@@ -172,12 +162,14 @@ export const MISSIONS = [
   },
 ];
 
+// Repeatable courier work after the story: three stops against the clock.
 export const COURIER = {
   id: 'courier',
   title: 'Courier Run',
   type: 'courier',
-  intro: 'A courier run — reach the marker before the clock runs out.',
-  time: 120,
+  intro: 'Courier run — three stops before the clock runs out.',
+  targets: [[-150, 150], [150, -150], [150, 150]],
+  time: 150,
   reward: 100,
 };
 
