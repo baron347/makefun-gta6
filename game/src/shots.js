@@ -1,191 +1,313 @@
-// NEON HARBOR — screenshot staging (?shot=cover|street|mission|chase).
-// Each scene runs the REAL game forward (real driving, real mission
-// completion, real wanted system), positions the camera low and close,
-// then freezes the world and sets window.__shotReady. The take-shots
-// script waits for that flag before capturing 1280x800.
+// NEON HARBOR — deterministic screenshot staging (?shot= + ?seed=7).
+// Each scene drives the REAL game forward with a scripted autopilot for
+// a fixed number of 1/60 s steps, then freezes the frame and sets
+// window.__shotReady. The take-shots script waits for that flag.
 
-import { CITY, ROADS, snapToRoad, nearestRoad, dist2 } from './config.js';
+import { angleDiff, clamp, dist2 } from './config.js';
+import { repaintCar } from './vehicles.js';
 
-const T = window.THREE;
+const STEP = 1 / 60;
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function stepN(game, n) {
+  for (let i = 0; i < n; i++) game.tick(STEP);
+}
 
-async function waitFor(fn, timeoutMs, label) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    if (fn()) return true;
-    await sleep(100);
+// Set the player's key state for the autopilot, then step once.
+function driveStep(game, { forward = true, back = false, left = false, right = false, handbrake = false } = {}) {
+  const k = game.keys;
+  k.clear();
+  if (forward) k.add('KeyW');
+  if (back) k.add('KeyS');
+  if (left) k.add('KeyA');
+  if (right) k.add('KeyD');
+  if (handbrake) k.add('Space');
+  game.tick(STEP);
+}
+
+// Manhattan autopilot: drive along the current road axis toward the
+// target; turn only near intersections. Never steer straight at the
+// target — that drives through buildings. `stuck` detection reverses
+// briefly when the car stops making progress.
+export function gridDrive(game, target, seconds) {
+  const car = game.playerCar;
+  if (!car) return;
+  const steps = Math.round(seconds * 60);
+  let stuckT = 0;
+  let reversing = 0;
+  let lastD = dist2(car.x, car.z, target.x, target.z);
+  for (let i = 0; i < steps; i++) {
+    const d = dist2(car.x, car.z, target.x, target.z);
+    if (d < 6) break;
+    if (reversing > 0) {
+      reversing--;
+      driveStep(game, { forward: false, back: true });
+      continue;
+    }
+    if (Math.abs(car.speed) < 1.5) {
+      stuckT += STEP;
+      if (stuckT > 1.5) {
+        reversing = Math.round(0.9 * 60);
+        stuckT = 0;
+        continue;
+      }
+    } else {
+      stuckT = 0;
+    }
+    // Which axis are we driving on? The one our heading is closest to.
+    const onXAxis = Math.abs(Math.sin(car.heading)) > Math.abs(Math.cos(car.heading));
+    // Desired heading: along the current axis toward the target's road,
+    // turning only when we are near the intersection with that road.
+    let desired;
+    if (onXAxis) {
+      const targetRoadZ = game.city.nearestRoad(target.x, target.z).z;
+      const dzRoad = targetRoadZ - car.z;
+      if (Math.abs(dzRoad) < 4) {
+        desired = target.x > car.x ? Math.PI / 2 : -Math.PI / 2;
+      } else {
+        desired = car.heading; // keep going along X until the turn road
+        if (Math.abs(car.z - targetRoadZ) < 14) {
+          // Approaching the turn: aim for the intersection.
+          desired = dzRoad > 0 ? 0 : Math.PI;
+          // Blend: steer toward the target road only when close.
+          if (Math.abs(car.z - targetRoadZ) > 6) desired = car.heading;
+        }
+      }
+    } else {
+      const targetRoadX = game.city.nearestRoad(target.x, target.z).x;
+      const dxRoad = targetRoadX - car.x;
+      if (Math.abs(dxRoad) < 4) {
+        desired = target.z > car.z ? 0 : Math.PI;
+      } else {
+        desired = car.heading;
+        if (Math.abs(car.x - targetRoadX) < 14) {
+          desired = dxRoad > 0 ? Math.PI / 2 : -Math.PI / 2;
+          if (Math.abs(car.x - targetRoadX) > 6) desired = car.heading;
+        }
+      }
+    }
+    const turn = angleDiff(car.heading, desired);
+    const handbrake = Math.abs(turn) > 0.6;
+    driveStep(game, {
+      forward: !handbrake || Math.abs(car.speed) < 4,
+      left: turn > 0.06,
+      right: turn < -0.06,
+      handbrake,
+    });
+    lastD = d;
   }
-  console.warn('staging wait timed out:', label);
-  return false;
+  game.keys.clear();
 }
 
-function setCam(game, px, py, pz, lx, ly, lz) {
-  game.shotCamera = {
-    pos: new T.Vector3(px, py, pz),
-    look: new T.Vector3(lx, ly, lz),
-  };
+function stealParkedNear(game, x, z) {
+  game.player.setPosition(x, z, 0);
+  game.stealNearestCar();
+  return game.playerCar;
 }
 
-function freeze(game) {
-  game.frozen = true;
-  game.keys = {};
-  game.clearTracers();
+function nearestParked(game, x, z) {
+  let best = null;
+  let bestD = 1e9;
+  for (const c of game.traffic.parked) {
+    const d = dist2(c.x, c.z, x, z);
+    if (d < bestD) { best = c; bestD = d; }
+  }
+  return best;
 }
 
-// Put the player in a car parked on a road, facing along it.
-function putPlayerInCar(game, x, z, heading) {
-  const car = game.traffic.parked[0] || game.traffic.cars[0];
-  car.place(x, z, heading);
+// --- Shot 1: cover / chase -------------------------------------------------
+function shotCover(game) {
+  // Cash above $0 in frame: finish job 1 first, for real.
+  game.missions.startNext();
+  const marker = game.missions.markerPos();
+  const car0 = nearestParked(game, 0, 60);
+  game.player.setPosition(car0.x + 2.6, car0.z, car0.heading);
+  game.stealNearestCar();
+  const car = game.playerCar;
+  car.x = marker.x;
+  car.z = marker.z - 5;
+  car.heading = 0;
+  car.mesh.position.set(car.x, 0, car.z);
+  car.mesh.rotation.y = 0;
+  stepN(game, 30); // mission 1 completes, +$150
+  // Chase staging.
+  repaintCar(car, 0xd8232a);
+  car.x = 0;
+  car.z = -180;
+  car.heading = 0;
   car.speed = 0;
-  game.playerCar = car;
-  game.player.inCar = true;
-  game.player.mesh.visible = false;
-  game.player.x = x;
-  game.player.z = z;
-  game.player.heading = heading;
-  const idx = game.traffic.parked.indexOf(car);
-  if (idx >= 0) game.traffic.parked.splice(idx, 1);
-  return car;
+  car.mesh.position.set(0, 0, -180);
+  car.mesh.rotation.y = 0;
+  game.setWanted(3);
+  gridDrive(game, { x: 0, z: 240 }, 6);
+  // A cruiser alongside ahead-left so the chase reads in frame.
+  game.police.parkAlongside(car, 12, -4.5);
+  game.hud.hideToast();
+  game.freezeFrame();
 }
 
-// Scatter traffic cars + peds onto the roads around (x, z) so the
-// frame reads dense, not empty.
-function crowdAround(game, x, z, nCars, nPeds) {
-  const roads = ROADS.filter((c) => Math.abs(c - x) < 90 || Math.abs(c - z) < 90);
-  let placed = 0;
-  for (const car of game.traffic.cars) {
-    if (placed >= nCars) break;
-    const road = roads[placed % roads.length];
-    const along = (placed % 2 === 0);
-    const off = (Math.floor(placed / 2) % 5 - 2) * 16;
-    const cx = along ? road + (placed % 2 ? 3.5 : -3.5) : x + off;
-    const cz = along ? z + off : road + (placed % 2 ? 3.5 : -3.5);
-    car.place(cx, cz, along ? (placed % 2 ? 0 : Math.PI) : (placed % 2 ? Math.PI / 2 : -Math.PI / 2));
-    car.speed = 0;
-    placed += 1;
-  }
-  let pp = 0;
-  for (const p of game.peds.list) {
-    if (pp >= nPeds) break;
-    p.x = x + (pp % 5 - 2) * 4;
-    p.z = z + (Math.floor(pp / 5) % 3 - 1) * 5 + 6;
-    p.down = false;
-    p.mesh.rotation.z = 0;
-    p.mesh.position.set(p.x, 0, p.z);
-    pp += 1;
-  }
+// --- Shot 2: street ---------------------------------------------------------
+function shotStreet(game) {
+  // Pack 3 traffic cars + 6 peds onto the downtown avenue.
+  const spots = [
+    { x: 3.5, z: -14, h: 0 },
+    { x: -3.5, z: -44, h: 0 },
+    { x: -26, z: 0, h: Math.PI / 2 },
+  ];
+  game.traffic.cars.slice(0, 3).forEach((c, i) => {
+    const s = spots[i];
+    c.x = s.x;
+    c.z = s.z;
+    c.heading = s.h;
+    c.speed = 0;
+    c.hold = true; // stay put for the shot
+    c.mesh.position.set(s.x, 0, s.z);
+    c.mesh.rotation.y = s.h;
+  });
+  const pedSpots = [
+    { x: 8.6, z: 14 }, { x: 8.6, z: -2 }, { x: 8.6, z: -16 },
+    { x: -8.6, z: 10 }, { x: -8.6, z: -6 }, { x: -8.6, z: -14 },
+  ];
+  game.peds.list.slice(0, 6).forEach((p, i) => {
+    const s = pedSpots[i];
+    game.peds.place(p, s.x, s.z, Math.PI);
+    p.target = { x: s.x, z: s.z - 12 }; // keep them walking nearby
+  });
+  // Player walks north for 2 s.
+  game.player.setPosition(2, 20, Math.PI);
+  game.player.camYaw = 0;
+  game.keys.clear();
+  game.keys.add('KeyW');
+  game.keys.add('ShiftLeft');
+  stepN(game, 120);
+  game.keys.clear();
+  // Diagonal 3/4 camera.
+  const p = game.player;
+  game.cameraOverride = {
+    pos: { x: p.x + 6, y: 4.5, z: p.z + 7.5 },
+    look: { x: p.x - 3, y: 1.5, z: p.z - 8 },
+  };
+  game.hud.hideToast();
+  game.freezeFrame();
 }
 
-async function stageCover(game) {
-  // Wanted 3: roadblocks form across the road ahead of the player.
-  // Heading PI faces -Z, where the roadblock spawns on road x=0.
-  const car = putPlayerInCar(game, 0, 60, Math.PI);
-  game.setWanted(3, true);
-  await sleep(2500); // let cruisers + roadblock spawn and settle
-  // Pull the car to ~14 m short of the roadblock so the two cruisers
-  // parked across the road fill the frame.
-  const block = game.police.roadblocks[0];
-  if (block) {
-    car.place(block.x, block.z + 14, Math.PI);
-    game.player.x = block.x;
-    game.player.z = block.z + 14;
-  }
-  crowdAround(game, 0, 40, 4, 4);
-  // Camera low behind the car (behind = +Z for heading PI), looking
-  // forward down the road at the roadblock cruisers.
-  setCam(game, car.x - 2, 2.8, car.z + 10, car.x, 2, car.z - 40);
-  game.hud.toast('Roadblock ahead — 3★ wanted!', 3);
-  freeze(game);
-}
-
-async function stageStreet(game) {
-  // On foot, downtown, dense traffic + peds in frame, player visible.
-  // Player faces -Z (heading PI); camera sits behind (+Z) and looks
-  // straight at the player so he is centered, street beyond him.
-  game.player.setPosition(0, 0, Math.PI);
-  game.player.camYaw = Math.PI;
-  crowdAround(game, 0, -6, 10, 12);
-  await sleep(1200);
-  // Keep the line camera->player clear of traffic cars.
-  for (const c of game.traffic.cars) {
-    if (Math.abs(c.x) < 3 && c.z > -2 && c.z < 10) c.place(c.x + 14, c.z, c.heading);
-  }
-  setCam(game, 2.5, 3.0, 7.5, 0, 1.3, -2);
-  game.hud.toast('Downtown — steal a car with E', 3);
-  freeze(game);
-}
-
-async function stageMission(game) {
-  // Complete mission 1 FOR REAL (teleport the car to the marker and
-  // let the loop pay out), then stage mission 2 with its gold beam in
-  // frame and cash already above $0.
-  const car = putPlayerInCar(game, 0, 60, 0);
-  game.missions.startNext();
+// --- Shot 3: mission ---------------------------------------------------------
+function shotMission(game) {
+  // Cash above $0 in frame: finish job 1 first, for real.
+  const car0 = nearestParked(game, 0, 120);
+  game.player.setPosition(car0.x + 2.6, car0.z, car0.heading);
+  game.stealNearestCar();
+  const car = game.playerCar;
+  game.missions.startNext(); // First Pickup
   const m1 = game.missions.markerPos();
-  // Park 5 m short of the marker ALONG its road (never off-road, or
-  // the building collision pushes the car out of frame).
-  const n1 = nearestRoad(m1.x, m1.z);
-  const dx1 = n1.along === 'x' ? 5 : 0;
-  const dz1 = n1.along === 'z' ? 5 : 0;
-  car.place(m1.x - dx1, m1.z - dz1, 0);
-  game.player.x = m1.x - dx1; game.player.z = m1.z - dz1;
-  await waitFor(() => game.missions.completed >= 1, 5000, 'mission 1 payout');
-  // Mission 2: delivery across town. Stage the car on the same road
-  // as the marker, 26 m short of it, beam + diamond in frame.
-  game.missions.startNext();
-  const m2 = game.missions.markerPos();
-  const n2 = nearestRoad(m2.x, m2.z);
-  let spot;
-  let heading;
-  if (n2.along === 'x') { spot = { x: m2.x - 26, z: m2.z }; heading = Math.PI / 2; }
-  else { spot = { x: m2.x, z: m2.z - 26 }; heading = 0; }
-  car.place(spot.x, spot.z, heading);
-  game.player.x = spot.x; game.player.z = spot.z;
-  await sleep(1500);
-  crowdAround(game, spot.x, spot.z - 10, 5, 6);
-  // Camera sits BEHIND the car (opposite its forward) so the car is
-  // in the lower frame and the gold beam is ahead of it.
-  const fx = Math.sin(heading);
-  const fz = Math.cos(heading);
-  setCam(game, spot.x - fx * 11 + 3, 4.0, spot.z - fz * 11, m2.x, 4, m2.z);
-  freeze(game);
-}
-
-async function stageChase(game) {
-  // Wanted 5: heli overhead, cruisers chasing, police tracers flying,
-  // a ped down on the sidewalk — combat that reads as combat.
-  // Heading PI faces -Z; camera sits behind (+Z), chasers behind us.
-  const car = putPlayerInCar(game, 0, 60, Math.PI);
-  game.setWanted(5, true);
-  await sleep(3000); // cruisers + heli spawn, chase begins
-  crowdAround(game, 0, 40, 6, 8);
-  // A ped visibly down near the road, ahead-left of the player car.
-  const p = game.peds.list[0];
-  game.peds.knockDown(p);
-  p.mesh.position.set(-5, 0.3, 44);
-  p.x = -5; p.z = 44;
-  setCam(game, car.x - 3, 4.0, car.z + 12, car.x, 2, car.z - 40);
-  game.hud.toast('5★ — the whole Harbor PD is on you!', 3);
-  freeze(game);
-  // Fire the tracers AFTER freezing, so they survive to the capture:
-  // two red police tracers toward the player, one gold outgoing.
-  const near = game.police.cruisers[0];
-  if (near) {
-    game.fireTracer({ x: near.x, y: 1.5, z: near.z }, { x: car.x + 2, y: 1.4, z: car.z - 2 }, 0xff4a3a, 0.24);
-    game.fireTracer({ x: near.x + 3, y: 1.5, z: near.z + 4 }, { x: car.x - 2, y: 1.4, z: car.z - 4 }, 0xff4a3a, 0.24);
+  car.x = m1.x;
+  car.z = m1.z - 5;
+  car.heading = 0;
+  car.mesh.position.set(car.x, 0, car.z);
+  car.mesh.rotation.y = 0;
+  stepN(game, 30); // +$150
+  // Now the real shot: Hot Delivery sets wanted 2; stepping out and
+  // stealing the car again adds the third star.
+  game.missions.index = 1;
+  game.missions.startNext(); // Hot Delivery, wanted 2, 150 s
+  game.exitCar();
+  game.player.setPosition(car.x + 2.6, car.z, car.heading);
+  game.stealNearestCar();
+  repaintCar(car, 0xe0a83c);
+  car.x = 0;
+  car.z = 120;
+  car.heading = Math.PI;
+  car.speed = 0;
+  car.mesh.position.set(0, 0, 120);
+  car.mesh.rotation.y = Math.PI;
+  const marker = game.missions.markerPos();
+  gridDrive(game, marker, 4);
+  // Re-pose on the marker's own road, 60 m short of it, heading straight
+  // at it at 22 m/s — so the gold beam is dead-centre in frame.
+  const road = game.city.nearestRoad(marker.x, marker.z);
+  let nx = marker.x;
+  let nz = marker.z;
+  let head = 0;
+  if (road.axis === 'z') {
+    nx = road.x;
+    if (marker.z + 60 <= 295) { nz = marker.z + 60; head = Math.PI; }
+    else { nz = marker.z - 60; head = 0; }
+  } else {
+    nz = road.z;
+    if (marker.x + 60 <= 295) { nx = marker.x + 60; head = -Math.PI / 2; }
+    else { nx = marker.x - 60; head = Math.PI / 2; }
   }
-  game.fireTracer({ x: car.x, y: 1.5, z: car.z - 2 }, { x: car.x + 6, y: 1.6, z: car.z - 34 }, 0xffe14a, 0.24);
-  game.spawnSmoke(car.x + 4, car.z - 6, true);
+  car.x = nx;
+  car.z = nz;
+  car.heading = head;
+  car.speed = 22;
+  car.mesh.position.set(nx, 0, nz);
+  car.mesh.rotation.y = head;
+  // Snap the chase camera behind the car (no lerp after a teleport).
+  snapChaseCamera(game, car);
+  game.police.pushCruisersAway(car.x, car.z, 14);
+  game.police.parkAlongside(car, 12, -4.5);
+  game.hud.hideToast();
+  game.freezeFrame();
 }
 
-export async function stageShot(game, name) {
-  // Let the first frames render so the scene exists.
-  await sleep(600);
-  if (name === 'cover') await stageCover(game);
-  else if (name === 'street') await stageStreet(game);
-  else if (name === 'mission') await stageMission(game);
-  else if (name === 'chase') await stageChase(game);
-  else console.warn('unknown shot:', name);
-  window.__shotReady = true;
+// Place the chase camera directly behind `car` and look ahead of it.
+function snapChaseCamera(game, car) {
+  const fx = Math.sin(car.heading);
+  const fz = Math.cos(car.heading);
+  game.camera.position.set(car.x - fx * 8.5, 3.6, car.z - fz * 8.5);
+  game.camera.lookAt(car.x + fx * 6, 1.4, car.z + fz * 6);
+  game.cameraOverride = null;
+}
+
+// --- Shot 4: shootout ---------------------------------------------------------
+function shotChase(game) {
+  game.setWanted(5);
+  game.player.setPosition(0, 0, Math.PI);
+  game.player.camYaw = 0;
+  game.player.camPitch = 0.5;
+  // Stand still 2.5 s while the cruisers close in.
+  stepN(game, 150);
+  // Safety: if a foot cop busted the player mid-stand, reset the scene.
+  if (game.state !== 'playing') {
+    game.state = 'playing';
+    game.hud.showScreen(null);
+    game.player.setPosition(0, 0, Math.PI);
+    game.setWanted(5);
+  }
+  for (const cop of game.police.cops) game.scene.remove(cop.mesh);
+  game.police.cops = [];
+  game.police.pushCruisersAway(0, 0, 8);
+  // A target standing in the street ahead, dead-centre in the crosshair.
+  game.peds.place(game.peds.list[0], 0, -14, 0);
+  game.peds.list[0].target = { x: 0, z: -14 };
+  // Low 3/4 camera (pitch 0.5, dist 10), looking level down the street
+  // so the shot travels forward, then fire once for the flash.
+  game.cameraOverride = {
+    pos: { x: 0, y: 1.6 + Math.sin(0.5) * 10, z: Math.cos(0.5) * 10 },
+    look: { x: 0, y: 1.2, z: -30 },
+  };
+  game.tick(STEP); // apply the override once
+  game.shoot();
+  game.hud.update();
+  game.freezeFrame();
+}
+
+export function runShot(game, kind) {
+  switch (kind) {
+    case 'cover':
+      shotCover(game);
+      break;
+    case 'street':
+      shotStreet(game);
+      break;
+    case 'mission':
+      shotMission(game);
+      break;
+    case 'chase':
+      shotChase(game);
+      break;
+    default:
+      game.freezeFrame();
+      break;
+  }
 }

@@ -1,114 +1,159 @@
-// NEON HARBOR — the on-foot player: WASD movement relative to the
-// camera yaw, run, jump, and the third-person chase camera that follows
-// the player or the car they are driving.
+// NEON HARBOR — the player on foot plus the third-person / chase camera.
+// Driving itself lives in vehicles.js; this module owns the walker, the
+// character mesh, and where the camera sits in both modes.
 
-import { PLAYER, clamp, angleDiff } from './config.js';
-import { makePersonMesh } from './peds.js';
+import { PLAYER, clamp, headingVec } from './config.js';
 
-const T = window.THREE;
+const THREE = window.THREE;
+
+function makePlayerMesh() {
+  const group = new THREE.Group();
+  const shirt = new THREE.MeshStandardMaterial({ color: 0xf2c200, roughness: 0.8 });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.8, 0.3), shirt);
+  body.position.y = 1.05;
+  body.castShadow = true;
+  const head = new THREE.Mesh(
+    new THREE.SphereGeometry(0.21, 12, 10),
+    new THREE.MeshStandardMaterial({ color: 0xd8a075, roughness: 0.7 }),
+  );
+  head.position.y = 1.7;
+  const hair = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
+    new THREE.MeshStandardMaterial({ color: 0x1a1210, roughness: 1 }),
+  );
+  hair.position.y = 1.74;
+  const legs = new THREE.Mesh(
+    new THREE.BoxGeometry(0.46, 0.62, 0.28),
+    new THREE.MeshStandardMaterial({ color: 0x2a3550, roughness: 0.9 }),
+  );
+  legs.position.y = 0.31;
+  const pistol = new THREE.Mesh(
+    new THREE.BoxGeometry(0.08, 0.14, 0.3),
+    new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.4, metalness: 0.6 }),
+  );
+  pistol.position.set(0.32, 1.05, 0.18);
+  pistol.name = 'pistol';
+  group.add(body, head, hair, legs, pistol);
+  return group;
+}
 
 export class Player {
-  constructor(scene) {
+  constructor(scene, city) {
     this.scene = scene;
-    this.mesh = makePersonMesh(0xff8c4a, 0xc89878);
-    this.mesh.name = 'player';
-    this.scene.add(this.mesh);
-    this.x = 0; this.z = 30; this.y = 0;
+    this.city = city;
+    this.x = 0;
+    this.z = 60;
+    this.y = 0; // jump height above ground
     this.vy = 0;
-    this.heading = Math.PI;
-    this.camYaw = Math.PI;
+    this.heading = Math.PI; // facing north (-Z)
+    this.camYaw = 0; // camera orbit; W walks along the camera forward
     this.camPitch = 0.32;
-    this.camDist = 9;
-    this.health = PLAYER.health;
-    this.lastHurt = -99;
-    this.inCar = false;
+    this.mesh = makePlayerMesh();
+    this.scene.add(this.mesh);
+    this.walkPhase = 0;
   }
 
   setPosition(x, z, heading) {
-    this.x = x; this.z = z;
+    this.x = x;
+    this.z = z;
     if (heading !== undefined) {
       this.heading = heading;
-      this.camYaw = heading;
+      this.camYaw = heading + Math.PI;
     }
-    this.mesh.position.set(x, this.y, z);
-    this.mesh.rotation.y = heading;
+    this.y = 0;
+    this.vy = 0;
+    this._syncMesh();
   }
 
-  // input: {up, down, left, right, run, jump}. camera: THREE camera to
-  // position. dt seconds. resolveCollision from the city.
-  update(dt, t, input, camera, resolveCollision) {
-    // Health regen after a quiet spell.
-    if (t - this.lastHurt > PLAYER.regenDelay && this.health < PLAYER.health) {
-      this.health = Math.min(PLAYER.health, this.health + PLAYER.regen * dt);
-    }
-    if (this.inCar) {
-      // Camera is handled by the car in main.js; keep the mesh hidden.
-      this.mesh.visible = false;
-      return;
-    }
-    this.mesh.visible = true;
+  get speed() {
+    return this._speed || 0;
+  }
+
+  // input: {forward, back, left, right, run, jump}
+  update(dt, input) {
+    const speed = input.run ? PLAYER.runSpeed : PLAYER.walkSpeed;
+    // Camera forward on the ground plane: W walks away from the camera.
+    const fx = -Math.sin(this.camYaw);
+    const fz = -Math.cos(this.camYaw);
+    const rx = -fz;
+    const rz = fx;
     let mx = 0;
     let mz = 0;
-    if (input.up) mz -= 1;
-    if (input.down) mz += 1;
-    if (input.left) mx -= 1;
-    if (input.right) mx += 1;
-    const moving = mx !== 0 || mz !== 0;
-    const speed = input.run ? PLAYER.runSpeed : PLAYER.walkSpeed;
-    if (moving) {
-      const len = Math.hypot(mx, mz);
-      mx /= len; mz /= len;
-      const sin = Math.sin(this.camYaw);
-      const cos = Math.cos(this.camYaw);
-      const wx = mx * cos - mz * sin;
-      const wz = mx * sin + mz * cos;
-      const targetHeading = Math.atan2(wx, wz);
-      const diff = angleDiff(targetHeading, this.heading);
-      this.heading += clamp(diff, -9 * dt, 9 * dt);
-      const nx = this.x + wx * speed * dt;
-      const nz = this.z + wz * speed * dt;
-      const hit = resolveCollision ? resolveCollision(nx, nz, 0.6) : { x: nx, z: nz };
-      this.x = clamp(hit.x, -300, 300);
-      this.z = clamp(hit.z, -300, 300);
+    if (input.forward) { mx += fx; mz += fz; }
+    if (input.back) { mx -= fx; mz -= fz; }
+    if (input.right) { mx += rx; mz += rz; }
+    if (input.left) { mx -= rx; mz -= rz; }
+    const len = Math.hypot(mx, mz);
+    if (len > 0) {
+      mx /= len;
+      mz /= len;
+      this.x += mx * speed * dt;
+      this.z += mz * speed * dt;
+      this.heading = Math.atan2(mx, mz);
+      this._speed = speed;
+      this.walkPhase += dt * speed * 2.2;
+    } else {
+      this._speed = 0;
     }
     // Jump + gravity.
-    if (input.jump && this.y <= 0.01) this.vy = PLAYER.jumpSpeed;
-    this.vy -= PLAYER.gravity * dt;
-    this.y = Math.max(0, this.y + this.vy * dt);
-    if (this.y === 0) this.vy = 0;
-    this.mesh.position.set(this.x, this.y + (moving ? Math.abs(Math.sin(t * 9)) * 0.05 : 0), this.z);
+    if (input.jump && this.y === 0) this.vy = PLAYER.jumpVel;
+    if (this.y > 0 || this.vy !== 0) {
+      this.vy -= PLAYER.gravity * dt;
+      this.y += this.vy * dt;
+      if (this.y <= 0) {
+        this.y = 0;
+        this.vy = 0;
+      }
+    }
+    this.city.resolveCircle(this, 0.6);
+    this.x = clamp(this.x, -298, 298);
+    this.z = clamp(this.z, -298, 298);
+    this._syncMesh();
+  }
+
+  _syncMesh() {
+    const bob = this._speed > 0 ? Math.abs(Math.sin(this.walkPhase)) * 0.06 : 0;
+    this.mesh.position.set(this.x, this.y + bob, this.z);
     this.mesh.rotation.y = this.heading;
-    this.updateCamera(dt, camera);
   }
 
-  updateCamera(dt, camera) {
-    const target = this.inCar ? null : { x: this.x, z: this.z, y: this.y + 1.6 };
-    if (!target) return;
-    const cx = target.x - Math.sin(this.camYaw) * this.camDist;
-    const cz = target.z - Math.cos(this.camYaw) * this.camDist;
-    const cy = target.y + this.camDist * Math.tan(this.camPitch) + 1.2;
-    camera.position.x += (cx - camera.position.x) * Math.min(1, 8 * dt);
-    camera.position.y += (cy - camera.position.y) * Math.min(1, 8 * dt);
-    camera.position.z += (cz - camera.position.z) * Math.min(1, 8 * dt);
-    camera.lookAt(target.x, target.y, target.z);
+  // Place the camera for this frame. `car` is the driven car or null.
+  // `override` (shots) is {pos:{x,y,z}, look:{x,y,z}} and wins outright.
+  updateCamera(camera, dt, car, override) {
+    if (override) {
+      camera.position.set(override.pos.x, override.pos.y, override.pos.z);
+      camera.lookAt(override.look.x, override.look.y, override.look.z);
+      return;
+    }
+    const k = Math.min(1, dt * 5); // smoothing
+    if (car) {
+      const back = 8.5;
+      const up = 3.6;
+      const fwd = headingVec(car.heading);
+      const tx = car.x - fwd.x * back;
+      const tz = car.z - fwd.z * back;
+      camera.position.x += (tx - camera.position.x) * k;
+      camera.position.y += (up - camera.position.y) * k;
+      camera.position.z += (tz - camera.position.z) * k;
+      camera.lookAt(car.x + fwd.x * 6, 1.4, car.z + fwd.z * 6);
+    } else {
+      const dist = 8.5;
+      const pitch = this.camPitch;
+      const cx = this.x + Math.sin(this.camYaw) * dist * Math.cos(pitch);
+      const cz = this.z + Math.cos(this.camYaw) * dist * Math.cos(pitch);
+      const cy = 1.6 + Math.sin(pitch) * dist;
+      camera.position.x += (cx - camera.position.x) * k;
+      camera.position.y += (cy - camera.position.y) * k;
+      camera.position.z += (cz - camera.position.z) * k;
+      camera.lookAt(this.x, 1.5, this.z);
+    }
   }
 
-  // Chase camera behind a car, smoothed.
-  followCar(dt, camera, car) {
-    const back = 11;
-    const up = 4.6;
-    const cx = car.x - Math.sin(car.heading) * back;
-    const cz = car.z - Math.cos(car.heading) * back;
-    camera.position.x += (cx - camera.position.x) * Math.min(1, 6 * dt);
-    camera.position.y += (up - camera.position.y) * Math.min(1, 6 * dt);
-    camera.position.z += (cz - camera.position.z) * Math.min(1, 6 * dt);
-    camera.lookAt(car.x + Math.sin(car.heading) * 6, 1.4, car.z + Math.cos(car.heading) * 6);
-    this.camYaw = car.heading;
+  hide() {
+    this.mesh.visible = false;
   }
 
-  hurt(amount, t) {
-    this.health -= amount;
-    this.lastHurt = t;
-    return this.health <= 0;
+  show() {
+    this.mesh.visible = true;
   }
 }

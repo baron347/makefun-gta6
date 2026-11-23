@@ -1,58 +1,39 @@
-// NEON HARBOR — shared constants, city math, mission script, seeded RNG.
-// One small module every other module imports, so the city shape, the
-// mission list and the road helpers can never drift apart.
-
-export const SAVE_KEY = 'neonharbor-save-v2';
+// NEON HARBOR — shared constants, seeded RNG, mission script.
+// Everything the other modules need to agree on lives here.
 
 export const CITY = {
-  blocks: 9,
-  pitch: 60,
+  blocks: 9, // 9x9 blocks
+  pitch: 60, // metres between neighbouring road centrelines
   roadWidth: 14,
   sidewalk: 3,
-  half: 300,
-  lane: 3.5,
+  span: 300, // city runs -300..300 on both axes
+  roadCount: 10, // road centrelines at -300 + i*60, i = 0..9
 };
-
-export const ROADS = [];
-for (let i = 0; i <= CITY.blocks; i += 1) ROADS.push(-CITY.half + i * CITY.pitch);
 
 export const PLAYER = {
-  walkSpeed: 4.4,
-  runSpeed: 7.8,
-  jumpSpeed: 6.8,
+  walkSpeed: 4.2,
+  runSpeed: 7.5,
+  jumpVel: 6.5,
   gravity: 18,
-  health: 100,
-  regen: 6,
-  regenDelay: 10,
+  healthMax: 100,
 };
 
-export const CAR = {
-  accel: 17,
-  brake: 32,
-  reverse: 11,
-  maxSpeed: 35,
-  maxReverse: 11,
+export const DRIVING = {
+  accel: 16,
+  brake: 30,
+  reverseAccel: 10,
+  maxSpeed: 34,
+  maxReverse: 10,
   maxSteer: 0.55,
   handbrakeTurn: 1.7,
 };
 
-export const WANTED = {
-  max: 5,
-  quietSeconds: 25,
-  decayEvery: 8,
-  copBustRange: 1.7,
-  copBustSeconds: 1.5,
-  ramDamage: 12,
-  ramRange: 3.4,
-};
+export const SAVE_KEY = 'neonharbor-save-v1';
 
-export const TRAFFIC_COUNT = 32;
-export const PARKED_COUNT = 14;
-export const PED_COUNT = 24;
-
+// --- Seeded RNG (mulberry32) --------------------------------------------
 export function mulberry32(seed) {
   let a = seed >>> 0;
-  return function next() {
+  return function () {
     a |= 0;
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
@@ -61,122 +42,114 @@ export function mulberry32(seed) {
   };
 }
 
-export const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
-export const lerp = (a, b, t) => a + (b - a) * t;
+export function pick(rng, arr) {
+  return arr[Math.floor(rng() * arr.length)];
+}
 
-export function angleDiff(a, b) {
-  let d = a - b;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d <= -Math.PI) d += Math.PI * 2;
+// --- Small math helpers ---------------------------------------------------
+export function clamp(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+export function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+// Shortest signed angle from `from` to `to`, in (-PI, PI].
+export function angleDiff(from, to) {
+  let d = (to - from) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d <= -Math.PI) d += Math.PI * 2;
   return d;
 }
-
 export function dist2(ax, az, bx, bz) {
-  return Math.hypot(ax - bx, az - bz);
+  const dx = ax - bx;
+  const dz = az - bz;
+  return Math.hypot(dx, dz);
+}
+// Heading convention: heading 0 faces +Z, heading PI faces -Z (north).
+// Forward vector for a heading: (sin h, cos h) in (x, z).
+export function headingVec(h) {
+  return { x: Math.sin(h), z: Math.cos(h) };
 }
 
-export function inBounds(x, z) {
-  return Math.abs(x) <= CITY.half && Math.abs(z) <= CITY.half;
-}
-
-// Nearest point on the road network to (x, z). Roads are axis-aligned
-// lines, so this is just the closest vertical or horizontal road line.
-export function nearestRoad(x, z) {
-  let best = null;
-  for (const c of ROADS) {
-    const d = Math.abs(x - c);
-    if (!best || d < best.d) best = { x: c, z: clamp(z, -CITY.half, CITY.half), along: 'z', d };
-    const d2 = Math.abs(z - c);
-    if (d2 < best.d) best = { x: clamp(x, -CITY.half, CITY.half), z: c, along: 'x', d: d2 };
-  }
-  return best;
-}
-
-export function snapToRoad(x, z) {
-  const n = nearestRoad(x, z);
-  return { x: n.x, z: n.z };
-}
-
-export function randomRoadPoint(rng) {
-  const c = ROADS[Math.floor(rng() * ROADS.length)];
-  const along = -CITY.half + rng() * CITY.half * 2;
-  return rng() < 0.5 ? { x: c, z: along } : { x: along, z: c };
-}
-
-// ------------------------------------------------------------------ missions
-//
-// Story: Danny "Dash" Reyes owes Mama Lou. Six story jobs, then repeatable
-// courier runs. Targets are snapped to the nearest road when a job starts,
-// so a marker never lands inside a building.
-export const MISSIONS = [
+// --- Mission script -------------------------------------------------------
+// Story order: pickup, delivery, drops, heat, tail, score — then the
+// repeatable courier run. Targets are snapped to the nearest road by the
+// mission manager so a marker never lands inside a building.
+export const MISSION_DEFS = [
   {
     id: 'pickup',
     title: 'First Pickup',
-    type: 'pickup',
-    intro: 'Pick up the package at the docks.',
-    target: [-210, 240],
+    text: 'Reach the docks — Mama Lou is waiting on that package.',
+    type: 'reach',
+    target: { x: -210, z: 240 },
     reward: 150,
   },
   {
     id: 'delivery',
     title: 'Hot Delivery',
-    type: 'delivery',
-    intro: 'Deliver the goods across town. 2 stars from the start.',
-    target: [210, -210],
-    reward: 300,
+    text: 'Deliver the package across town. The cops are already looking.',
+    type: 'timed',
+    target: { x: 210, z: -210 },
     time: 150,
     startWanted: 2,
+    reward: 300,
   },
   {
     id: 'drops',
     title: 'Three Drops',
+    text: 'Collect the 3 cash cases stashed around the city.',
     type: 'drops',
-    intro: 'Drop the cash cases at three spots.',
-    targets: [[-180, -180], [180, 180], [0, -210]],
+    targets: [
+      { x: -180, z: -180 },
+      { x: 180, z: 180 },
+      { x: 0, z: -210 },
+    ],
     reward: 400,
   },
   {
     id: 'heat',
     title: 'Lose the Heat',
+    text: 'Three stars on your head. Shake the cops until the heat is gone.',
     type: 'heat',
-    intro: '3 stars on your tail. Lose them all to finish the job.',
     startWanted: 3,
     reward: 250,
   },
   {
     id: 'tail',
     title: 'Tail the Courier',
+    text: 'Follow the gold car. Stay close — but if he spots you, it is over.',
     type: 'tail',
-    intro: 'Follow the gold car — stay close, do not lose it.',
+    tailTime: 20, // seconds inside tail range to complete
+    tailDist: 25, // inside this range counts as tailing
+    loseDist: 35, // past this range the tail is slipping
+    loseTime: 5, // seconds past loseDist before the tail fails
     reward: 350,
   },
   {
     id: 'score',
     title: 'The Big Score',
+    text: 'Hold E at the bank to grab the loot, then reach the hideout.',
     type: 'score',
-    intro: 'Hold E at the bank to grab the loot, then reach the hideout.',
-    bank: [0, -60],
-    hideout: [-180, 180],
+    bank: { x: 0, z: -60 },
+    hideout: { x: -180, z: 180 },
     time: 240,
+    grabWanted: 3,
     reward: 800,
+  },
+  {
+    id: 'courier',
+    title: 'Courier Run',
+    text: 'Drop the parcels at every stop before the clock runs out.',
+    type: 'courier',
+    stops: 3,
+    time: 120,
+    reward: 100,
   },
 ];
 
-// Repeatable courier work after the story: three stops against the clock.
-export const COURIER = {
-  id: 'courier',
-  title: 'Courier Run',
-  type: 'courier',
-  intro: 'Courier run — three stops before the clock runs out.',
-  targets: [[-150, 150], [150, -150], [150, 150]],
-  time: 150,
-  reward: 100,
-};
+export const STORY_COUNT = 6; // first six defs are the story arc
 
-export const STORY = {
-  hero: 'Danny "Dash" Reyes',
-  boss: 'Mama Lou',
-  blurb:
-    'Sunset over Neon Harbor. You owe Mama Lou, and she collects. ' +
-    'Steal cars, dodge the Harbor PD, run six jobs — and maybe walk away clean.',
+export const RESPAWN = {
+  clinic: { x: 30, z: 270 },
+  precinct: { x: 0, z: -270 },
 };

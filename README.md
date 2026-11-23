@@ -1,83 +1,117 @@
-# NEON HARBOR — an open-world three.js crime game
+# NEON HARBOR — Open World Crime
 
-[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
-[![rank](https://make.fun/badge/gta6-01/baron347/makefun-gta6/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
-[![reward](https://make.fun/badge/gta6-01/baron347/makefun-gta6/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+A three.js open-world crime game that runs offline from static files in a
+desktop browser. Sunset City, 6:47 PM: steal cars, outrun the law, run jobs
+for Mama Lou, and don't get caught.
 
-**Steal a car. Outrun the cops. Run the jobs. Own the harbor.**
+## The game
 
-NEON HARBOR is an open-world crime game in the browser — a 9×9-block sunset
-city you explore on foot and by car, with 32 traffic cars and 14 parked,
-a 5-star wanted system with police chases, roadblocks and a police
-helicopter, 6 story missions plus multi-stop courier jobs, a pistol,
-a full HUD with a local-zoom minimap, menu / pause / busted / wasted
-states, localStorage saves, and WebAudio sound. Static files, no network,
-no account.
+**City.** A procedural 9×9-block city (60 m pitch, roads at every 60 m from
+-300 to 300) with a canvas-textured ground plane — asphalt, sidewalks,
+centre dashes, crosswalks — buildings with lit-window facades (taller
+downtown, up to ~68 m), 7 parks, palms along the central avenue,
+streetlights, neon billboards downtown, and a violet-to-orange gradient
+sky dome with fog and a low sun.
 
-![Cover — a police chase through the harbor](screenshots/1-cover.jpg)
+**On foot & by car.** Walk, run, jump (WASD + Shift + Space, mouse to look,
+pointer lock with drag fallback). Steal any parked car — or a stopped
+traffic car — with E and drive it with arcade handling (handbrake on
+Space). 32 traffic cars in 5 variants (sedan, taxi, van, truck, sport)
+follow the road grid, slow for the car ahead, and turn at intersections;
+14 parked cars wait along the curbs.
 
-## What you do
+**Wanted.** Stealing a car, running a pedestrian over, or shooting one
+each add a star (max 5). At wanted 1–5, up to 6 police cruisers chase you
+(faster and more aggressive as the stars climb); cruisers ram and damage
+you. At wanted 3+, cruisers set up roadblocks across the road ahead. At
+wanted 4+, a police helicopter orbits overhead with a spotlight. On foot,
+officers get out and chase you — one that stays within arm's reach for
+1.5 s busts you (fine + respawn at the precinct). Stay quiet and out of
+sight and the heat cools off, one star at a time. Health regenerates
+after 10 s without damage; at zero health you wake up at the clinic
+minus 15% of your cash.
 
-- **Drive the city.** Take any car on the street — traffic keeps moving,
-  parked cars wait at the curb, and the city is yours to cross. Traffic
-  mixes sedans, yellow taxis, vans and sports cars, each with its own
-  shape, top speed and handling.
-- **Earn your wanted stars.** Steal cars and cause trouble and the police
-  come for you: cruisers chase, roadblocks form across the road at 3
-  stars and up, and a police helicopter with a spotlight orbits you at
-  4 stars and up. Lose them, or get busted.
-- **Run the jobs.** 6 story missions plus multi-stop courier work — a
-  pickup, a timed delivery, three drops, losing the heat, tailing a
-  gold car, and the big score. Each job pays, raises the heat, and
-  pushes the story forward.
-- **Stay alive.** A pistol, a health system with slow regen, and a HUD
-  that tells the truth: wanted level, local-zoom minimap, mission timer,
-  and cash earned from finished jobs.
+**Missions.** Danny "Dash" Reyes owes Mama Lou. Six story jobs, then
+repeatable courier runs (N to start the next job):
 
-## The city
+1. First Pickup — reach the docks ($150)
+2. Hot Delivery — cross town in 150 s, starting at 2★ ($300)
+3. Three Drops — collect 3 cash cases ($400)
+4. Lose the Heat — start at 3★, finish when the wanted level hits 0 ($250)
+5. Tail the Courier — follow the gold car for 20 s without losing it ($350)
+6. The Big Score — hold E at the bank to grab the loot (3★), then reach
+   the hideout in 240 s ($800)
+7. Courier Run — 3 random stops in 120 s, repeatable ($100)
 
-A procedural sunset city: varied facade colors, lit shopfronts on the
-ground floors, neon billboards downtown, parks with palms, a harbor
-water strip on the south edge, streetlights, and traffic lights that
-cycle at intersections. Everything is generated in code — no images,
-no external assets.
+A gold beam, a spinning diamond, and a ground ring mark the objective;
+an edge arrow points at it when it is off-screen.
 
-## Sound
+**Combat.** Click to fire the pistol (on foot). Shots knock pedestrians
+down, scare the crowd, and add a star. A tracer beam and muzzle flash
+mark each shot.
 
-All audio is synthesized with WebAudio: a bassline loop with two
-patterns (the busier one takes over when the heat is on), engine hum,
-a police siren that fades in with your wanted level, gunshots, and
-crash thuds that get louder with impact speed. Hard crashes also throw
-up smoke. M mutes.
+**HUD.** Cash, health bar, 5 wanted stars, mission title/objective/timer,
+speedometer, crosshair, damage vignette, and a circular local-zoom
+minimap (streets around you, mission marker, traffic dots, flashing
+police) with a player arrow. Menu, pause (P/Esc, with save), BUSTED and
+WASTED screens. Progress autosaves on every completed job and can be
+saved from the pause menu (localStorage).
+
+**Sound.** Everything is synthesized with WebAudio — no audio files:
+engine hum that follows your speed, a wailing siren while wanted,
+gunshots, impacts, pickup blips, mission jingles, a fail sting, and a
+lazy Am–F–C–G bassline loop that gets busier (and switches pattern) when
+the heat is on. M mutes.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
-| WASD | Walk / drive |
+| WASD / arrows | Move / drive |
+| Mouse | Look (click to lock the pointer) |
+| E | Steal / exit car; hold at the bank to grab the loot |
+| Click | Shoot (on foot) |
 | Shift | Run |
-| Space | Jump (on foot) / handbrake (in car) |
-| Mouse | Look (on foot) · Click to shoot (on foot) |
-| E | Steal / exit car · hold E at the bank during The Big Score |
+| Space | Jump on foot, handbrake while driving |
 | N | Start the next job |
-| P | Pause |
+| P / Esc | Pause |
 | M | Mute |
 
-## Play it
+## Screenshots
 
-Static files only — serve the `game/` folder and open `index.html`:
+Rendered deterministically in headless Chrome with `?shot=…&seed=7`:
+
+| File | Scene |
+| --- | --- |
+| `1-chase.jpg` | `?shot=cover` — red getaway car at 122 km/h, 3★ chase |
+| `2-street.jpg` | `?shot=street` — walking the downtown avenue among traffic and pedestrians |
+| `3-mission.jpg` | `?shot=mission` — Hot Delivery in the gold car, marker beam ahead |
+| `4-shootout.jpg` | `?shot=chase` — 5★ shootout, tracer fire, cruisers closing in |
+
+## Run it
 
 ```sh
-node serve.ts        # serves the game at http://localhost:8080
+node serve.ts        # serves game/ at http://localhost:8080
 ```
 
-Screenshot staging (used for the entry's screenshots) is built in:
-open `index.html?shot=cover|street|mission|chase` and the game stages
-that scene from the real running game.
+Build the submission bundle (Node 22, standard library only):
 
-## What it is not
+```sh
+mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+```
 
-No real-world brands, no licensed music, no network calls at runtime,
-no accounts, no microtransactions. The helicopter is police AI only —
-you cannot fly it. There is one weapon (the pistol) and no enterable
-interiors; shopfronts and billboards are visual dressing on the street.
+This copies `game/` and `screenshots/` to the output directory and
+writes `dossier.json` with the vendored `vendor/makefun-game.ts`.
+
+## Tech
+
+- three.js r160, vendored as `game/vendor/three.min.js` (UMD classic
+  script, no network at runtime)
+- ES modules under `game/src/`, no dependencies, no build step
+- Seeded RNG (`mulberry32`, default seed 7 via `?seed=`) so the city,
+  traffic, and screenshots are deterministic
+- Static files only: zero network requests while playing
+
+## License
+
+MIT — see `LICENSE`.

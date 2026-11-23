@@ -1,253 +1,300 @@
-// NEON HARBOR — six story jobs for Mama Lou plus repeatable courier
-// runs. The marker is a gold beam + spinning diamond + ground ring;
-// reaching it (or losing the heat, tailing the gold car, or grabbing the
-// loot) pays out and autosaves. Timers fail the job; N starts the next
-// one. The game object owns money / wanted / toasts; this module only
-// owns job state.
+// NEON HARBOR — missions: Danny "Dash" Reyes owes Mama Lou. Five story
+// jobs plus a tail job, then repeatable courier runs. A gold beam marks
+// the current objective; completing a job pays cash and autosaves.
 
-import { MISSIONS, COURIER, snapToRoad, dist2 } from './config.js';
-import { Car } from './vehicles.js';
+import { MISSION_DEFS, STORY_COUNT, mulberry32 } from './config.js';
+import { makeCar, repaintCar } from './vehicles.js';
 
-const T = window.THREE;
-
-const TAIL_RANGE = 26;
-const TAIL_LOSE = 48;
-const TAIL_HOLD = 20;
-const TAIL_FAIL = 8;
-
-function makeMarker() {
-  const g = new T.Group();
-  const beam = new T.Mesh(
-    new T.CylinderGeometry(1.1, 1.1, 42, 12, 1, true),
-    new T.MeshBasicMaterial({ color: 0xffc861, transparent: true, opacity: 0.35, side: T.DoubleSide, depthWrite: false }),
-  );
-  beam.position.y = 21;
-  const diamond = new T.Mesh(
-    new T.OctahedronGeometry(1.5),
-    new T.MeshBasicMaterial({ color: 0xffd23e }),
-  );
-  diamond.position.y = 7;
-  const ring = new T.Mesh(
-    new T.RingGeometry(2.2, 3.0, 32),
-    new T.MeshBasicMaterial({ color: 0xffc861, transparent: true, opacity: 0.85, side: T.DoubleSide }),
-  );
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.y = 0.15;
-  g.add(beam); g.add(diamond); g.add(ring);
-  g.userData.diamond = diamond;
-  g.userData.ring = ring;
-  g.visible = false;
-  return g;
-}
+const THREE = window.THREE;
 
 export class Missions {
-  constructor(game) {
+  constructor(scene, city, game) {
+    this.scene = scene;
+    this.city = city;
     this.game = game;
-    this.scene = game.scene;
-    this.index = 0;
-    this.completed = 0;
+    this.rng = mulberry32(99);
+    this.index = 0; // next story mission to start
+    this.completed = []; // ids of finished jobs
     this.active = null;
-    this.marker = makeMarker();
-    this.scene.add(this.marker);
-    this.tailCar = null;
+    this.marker = this._buildMarker();
+    this.marker.visible = false;
+    scene.add(this.marker);
+  }
+
+  _buildMarker() {
+    const group = new THREE.Group();
+    const beam = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.4, 1.4, 60, 12, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: 0xffc833, transparent: true, opacity: 0.28,
+        side: THREE.DoubleSide, depthWrite: false,
+      }),
+    );
+    beam.position.y = 30;
+    const diamond = new THREE.Mesh(
+      new THREE.OctahedronGeometry(1.7),
+      new THREE.MeshStandardMaterial({ color: 0xffc833, emissive: 0xaa7700, emissiveIntensity: 1.2 }),
+    );
+    diamond.position.y = 8;
+    diamond.name = 'diamond';
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(3, 4.2, 32),
+      new THREE.MeshBasicMaterial({ color: 0xffc833, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.15;
+    group.add(beam, diamond, ring);
+    group.userData.diamond = diamond;
+    return group;
+  }
+
+  _snap(p) {
+    const n = this.city.nearestRoad(p.x, p.z);
+    return { x: n.x, z: n.z };
+  }
+
+  _playerPos() {
+    const g = this.game;
+    if (g.playerCar) return { x: g.playerCar.x, z: g.playerCar.z };
+    return { x: g.player.x, z: g.player.z };
   }
 
   startNext() {
-    if (this.active) return false;
-    const def = this.index < MISSIONS.length ? MISSIONS[this.index] : COURIER;
-    this.start(def);
+    // If a job is already running (a test or the N key jumping ahead),
+    // drop it first so the new job always starts cleanly.
+    if (this.active) this._cleanupJob();
+    const def = this.index < STORY_COUNT
+      ? MISSION_DEFS[this.index]
+      : MISSION_DEFS[STORY_COUNT];
+    const jobDef = { ...def };
+    const job = {
+      def: jobDef,
+      timer: def.time !== undefined ? def.time : null,
+      tailT: 0,
+      loseT: 0,
+      targetCar: null,
+      stage: 0,
+      grabT: 0,
+      dropIndex: 0,
+      stopIndex: 0,
+    };
+    if (jobDef.type === 'courier') {
+      jobDef.targets = [];
+      for (let i = 0; i < jobDef.stops; i++) {
+        jobDef.targets.push(this._snap(this.city.randomRoadPoint(this.rng)));
+      }
+    } else if (jobDef.target) {
+      jobDef.target = this._snap(jobDef.target);
+    } else if (jobDef.targets) {
+      jobDef.targets = jobDef.targets.map((t) => this._snap(t));
+    }
+    if (jobDef.bank) jobDef.bank = this._snap(jobDef.bank);
+    if (jobDef.hideout) jobDef.hideout = this._snap(jobDef.hideout);
+    if (jobDef.startWanted !== undefined) this.game.setWanted(jobDef.startWanted);
+    if (jobDef.type === 'tail') {
+      const start = this._snap(this.city.randomRoadPoint(this.rng));
+      const car = makeCar('sedan', 0xe0a83c, start.x, start.z, 0);
+      car.speed = 10;
+      car.axis = 'x';
+      car.dir = 1;
+      car.isTarget = true;
+      job.targetCar = car;
+      this.scene.add(car.mesh);
+    }
+    this.active = job;
+    this._showMarker();
+    this.game.toast(`${jobDef.title} — ${jobDef.text}`);
     return true;
   }
 
-  start(def) {
-    const g = this.game;
-    const j = {
-      def,
-      timer: def.time || 0,
-      stopIdx: 0,
-      tailT: 0,
-      loseT: 0,
-      grabT: 0,
-      stage: 'go',
-      targetCar: null,
-      pos: null,
-    };
-    if (def.type === 'pickup' || def.type === 'delivery') {
-      j.pos = snapToRoad(def.target[0], def.target[1]);
-    } else if (def.type === 'drops' || def.type === 'courier') {
-      j.pos = snapToRoad(def.targets[0][0], def.targets[0][1]);
-    } else if (def.type === 'score') {
-      j.pos = snapToRoad(def.bank[0], def.bank[1]);
-    } else if (def.type === 'tail') {
-      // The gold target car cruises the grid ahead of the player.
-      const car = new Car('sport', 0xffd23e);
-      const px = g.player.x;
-      const pz = g.player.z;
-      car.place(px + 30, pz + 10, Math.PI / 2);
-      car.speed = 11;
-      this.scene.add(car.mesh);
-      this.tailCar = car;
-      j.targetCar = car;
-      j.pos = { x: car.x, z: car.z };
-    }
-    if (def.startWanted) g.setWanted(def.startWanted, true);
-    this.active = j;
-    this.showMarker();
-    g.hud.setMission(def.title, def.intro, j.timer > 0 ? this.fmtTime(j.timer) : '', false);
-    g.hud.toast(def.title + ' — ' + def.intro, 4);
-    g.audio.blip(660, 0.12, 0.3);
-    return j;
-  }
-
-  fmtTime(s) {
-    const m = Math.floor(s / 60);
-    const r = Math.floor(s % 60);
-    return m + ':' + String(r).padStart(2, '0');
-  }
-
+  // Where the player has to go right now, or null.
   markerPos() {
-    if (!this.active) return null;
-    if (this.active.def.type === 'tail' && this.active.targetCar) {
-      return { x: this.active.targetCar.x, z: this.active.targetCar.z };
+    const j = this.active;
+    if (!j) return null;
+    const d = j.def;
+    switch (d.type) {
+      case 'reach':
+      case 'timed':
+        return d.target;
+      case 'drops':
+        return d.targets[Math.min(j.dropIndex, d.targets.length - 1)];
+      case 'heat':
+        return null;
+      case 'tail':
+        return j.targetCar ? { x: j.targetCar.x, z: j.targetCar.z } : null;
+      case 'score':
+        return j.stage === 0 ? d.bank : d.hideout;
+      case 'courier':
+        return d.targets[Math.min(j.stopIndex, d.targets.length - 1)];
+      default:
+        return null;
     }
-    return this.active.pos;
   }
 
-  showMarker() {
-    const p = this.markerPos();
-    if (!p) { this.marker.visible = false; return; }
-    this.marker.position.set(p.x, 0, p.z);
+  _showMarker() {
+    const pos = this.markerPos();
+    if (!pos) {
+      this.marker.visible = false;
+      return;
+    }
     this.marker.visible = true;
+    this.marker.position.set(pos.x, 0, pos.z);
   }
 
   hideMarker() {
     this.marker.visible = false;
   }
 
-  advanceStop() {
-    const j = this.active;
-    const def = j.def;
-    j.stopIdx += 1;
-    if (j.stopIdx >= def.targets.length) {
-      this.complete();
-      return;
-    }
-    j.pos = snapToRoad(def.targets[j.stopIdx][0], def.targets[j.stopIdx][1]);
-    this.showMarker();
-    this.game.hud.toast('Drop ' + (j.stopIdx + 1) + ' of ' + def.targets.length, 2.5);
-  }
-
-  complete() {
-    const j = this.active;
-    const g = this.game;
-    g.money += j.def.reward;
-    this.completed += 1;
-    this.index += 1;
-    this.clearTailCar();
-    this.active = null;
-    this.hideMarker();
-    g.hud.setCash(g.money);
-    g.hud.setMission('NEON HARBOR', 'Press N to start the next job.', '', false);
-    g.hud.toast('Job complete! +$' + j.def.reward, 4);
-    g.audio.jingle(true);
-    g.save();
-  }
-
-  fail(reason) {
-    const j = this.active;
-    const g = this.game;
-    this.clearTailCar();
-    this.active = null;
-    this.hideMarker();
-    g.hud.setMission('NEON HARBOR', 'Press N to start the next job.', '', false);
-    g.hud.toast('Job failed — ' + reason, 4);
-    g.audio.jingle(false);
-  }
-
-  clearTailCar() {
-    if (this.tailCar) {
-      this.scene.remove(this.tailCar.mesh);
-      this.tailCar = null;
-    }
-  }
-
-  // Called every frame while a job is active. px/pz = player position,
-  // inCar, eHeld = the E key is down this frame.
-  update(dt, px, pz, inCar, eHeld) {
+  update(dt) {
     const j = this.active;
     if (!j) return;
-    const g = this.game;
-    // Marker animation.
-    if (this.marker.visible) {
-      this.marker.userData.diamond.rotation.y += dt * 2.5;
-      this.marker.userData.diamond.position.y = 7 + Math.sin(performance.now() / 350) * 0.6;
-    }
-    if (j.timer > 0) {
+    // Spin the diamond.
+    this.marker.userData.diamond.rotation.y += dt * 2.2;
+    this.marker.userData.diamond.position.y = 8 + Math.sin(performance.now() * 0.002) * 0.6;
+    const pos = this._playerPos();
+    const d = j.def;
+    if (j.timer !== null) {
       j.timer -= dt;
       if (j.timer <= 0) {
-        this.fail('out of time');
+        this._fail('Out of time');
         return;
       }
-      g.hud.setMission(j.def.title, j.def.intro, this.fmtTime(j.timer), j.timer < 30);
     }
-    const d = this.markerPos() ? dist2(px, pz, this.markerPos().x, this.markerPos().z) : 9999;
-
-    if (j.def.type === 'tail') {
-      const car = j.targetCar;
-      // Gold car cruises the grid: straight, turn at intersections.
-      car.x += Math.sin(car.heading) * car.speed * dt;
-      car.z += Math.cos(car.heading) * car.speed * dt;
-      if (Math.abs(car.x) > 280 || Math.abs(car.z) > 280) car.heading += Math.PI;
-      if (Math.random() < 0.4 * dt) car.heading += (Math.random() < 0.5 ? 1 : -1) * Math.PI / 2;
-      car.sync();
-      j.pos = { x: car.x, z: car.z };
-      this.showMarker();
-      const dd = dist2(px, pz, car.x, car.z);
-      if (dd < TAIL_RANGE) {
-        j.tailT += dt;
-        j.loseT = 0;
-      } else if (dd > TAIL_LOSE) {
-        j.loseT += dt;
-        if (j.loseT > TAIL_FAIL) { this.fail('lost the target'); return; }
+    switch (d.type) {
+      case 'reach':
+      case 'timed': {
+        if (Math.hypot(pos.x - d.target.x, pos.z - d.target.z) < 8) this._complete();
+        break;
       }
-      g.hud.setMission(j.def.title, 'Stay within ' + TAIL_RANGE + ' m — ' + Math.floor(j.tailT) + 's / ' + TAIL_HOLD + 's', j.timer > 0 ? this.fmtTime(j.timer) : '', false);
-      if (j.tailT >= TAIL_HOLD) { this.complete(); return; }
-      return;
-    }
-
-    if (j.def.type === 'heat') {
-      if (g.wanted === 0) { this.complete(); return; }
-      g.hud.setMission(j.def.title, 'Lose the cops — wanted ' + g.wanted + '★', '', false);
-      return;
-    }
-
-    if (j.def.type === 'score') {
-      if (j.stage === 'go') {
-        if (d < 7) {
-          if (eHeld) {
+      case 'drops': {
+        const t = d.targets[j.dropIndex];
+        if (t && Math.hypot(pos.x - t.x, pos.z - t.z) < 8) {
+          j.dropIndex++;
+          this.game.audio.blip();
+          this.game.toast(`Case ${j.dropIndex}/${d.targets.length} collected`);
+          if (j.dropIndex >= d.targets.length) this._complete();
+          else this._showMarker();
+        }
+        break;
+      }
+      case 'heat': {
+        if (this.game.wanted === 0) this._complete();
+        break;
+      }
+      case 'tail': {
+        this._driveTarget(dt, j.targetCar);
+        const td = Math.hypot(pos.x - j.targetCar.x, pos.z - j.targetCar.z);
+        if (td < d.tailDist) {
+          j.tailT += dt;
+          j.loseT = 0;
+        } else if (td > d.loseDist) {
+          j.loseT += dt;
+          if (j.loseT > d.loseTime) {
+            this._fail('You lost the courier');
+            return;
+          }
+        } else {
+          j.loseT = Math.max(0, j.loseT - dt);
+        }
+        if (j.tailT >= d.tailTime) this._complete();
+        break;
+      }
+      case 'score': {
+        if (j.stage === 0) {
+          const near = Math.hypot(pos.x - d.bank.x, pos.z - d.bank.z) < 5;
+          if (near && this.game.input.action) {
             j.grabT += dt;
-            g.hud.setMission(j.def.title, 'Grabbing the loot… ' + Math.ceil(4 - j.grabT) + 's (hold E)', '', false);
-            if (j.grabT >= 4) {
-              j.stage = 'escape';
-              j.pos = snapToRoad(j.def.hideout[0], j.def.hideout[1]);
-              this.showMarker();
-              g.setWanted(3, true);
-              g.hud.toast('Loot grabbed! Reach the hideout.', 3);
+            if (j.grabT >= 2) {
+              j.stage = 1;
+              j.timer = d.time;
+              this.game.setWanted(d.grabWanted);
+              this.game.toast('Loot grabbed! Lose the cops and reach the hideout.');
+              this.game.audio.blip();
+              this._showMarker();
             }
           } else {
-            g.hud.setMission(j.def.title, 'Hold E at the bank to grab the loot.', '', false);
+            j.grabT = 0;
           }
+        } else if (Math.hypot(pos.x - d.hideout.x, pos.z - d.hideout.z) < 8) {
+          this._complete();
         }
-        return;
+        break;
       }
-      if (d < 7) { this.complete(); return; }
-      return;
+      case 'courier': {
+        const t = d.targets[j.stopIndex];
+        if (t && Math.hypot(pos.x - t.x, pos.z - t.z) < 8) {
+          j.stopIndex++;
+          this.game.audio.blip();
+          this.game.toast(`Stop ${j.stopIndex}/${d.targets.length} done`);
+          if (j.stopIndex >= d.targets.length) this._complete();
+          else this._showMarker();
+        }
+        break;
+      }
+      default:
+        break;
     }
+    // Keep the marker glued to a moving target (tail job).
+    if (j.def.type === 'tail' && this.marker.visible) {
+      const mp = this.markerPos();
+      if (mp) this.marker.position.set(mp.x, 0, mp.z);
+    }
+  }
 
-    // pickup / delivery / drops / courier: reach the marker.
-    if (d < 7) {
-      if (j.def.type === 'drops' || j.def.type === 'courier') this.advanceStop();
-      else this.complete();
+  // Simple road-following driver for the tail target: cruise along its
+  // axis, turn at intersections at random.
+  _driveTarget(dt, car) {
+    if (!car) return;
+    const near = this.city.nearestRoad(car.x, car.z);
+    if (near.d < 1.2 && this.rng() < 0.35) {
+      const choices = near.axis === 'z'
+        ? [Math.PI / 2, -Math.PI / 2, car.heading + Math.PI]
+        : [0, Math.PI, car.heading + Math.PI];
+      car.heading = choices[Math.floor(this.rng() * choices.length)];
+      if (near.axis === 'z') car.x = near.x;
+      else car.z = near.z;
     }
+    const fx = Math.sin(car.heading);
+    const fz = Math.cos(car.heading);
+    car.x += fx * car.speed * dt;
+    car.z += fz * car.speed * dt;
+    if (!this.city.inBounds(car.x, car.z, 3)) {
+      car.heading += Math.PI;
+      car.x = Math.max(-297, Math.min(297, car.x));
+      car.z = Math.max(-297, Math.min(297, car.z));
+    }
+    this.city.resolveCircleCars(car, 2.3);
+    car.mesh.position.set(car.x, 0, car.z);
+    car.mesh.rotation.y = car.heading;
+  }
+
+  _complete() {
+    const j = this.active;
+    if (!j) return;
+    const d = j.def;
+    this.game.addCash(d.reward);
+    this.game.audio.jingle();
+    this.game.toast(`+$${d.reward} — ${d.title} complete!`);
+    this.completed.push(d.id);
+    if (this.index < STORY_COUNT) this.index++;
+    this._cleanupJob();
+    this.game.saveGame();
+  }
+
+  _fail(reason) {
+    const j = this.active;
+    if (!j) return;
+    this.game.audio.failSting();
+    this.game.toast(`${j.def.title} failed — ${reason}. Press N to retry.`);
+    this._cleanupJob();
+  }
+
+  _cleanupJob() {
+    const j = this.active;
+    if (j && j.targetCar) {
+      this.scene.remove(j.targetCar.mesh);
+    }
+    this.active = null;
+    this.hideMarker();
   }
 }
